@@ -1,0 +1,19 @@
+[package]
+name = "amaterasu-audio-encode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amaterasu-module-sdk.workspace = true
+amaterasu-media.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom = "0.3"
+opusic-sys = { version = "=0.7.5", default-features = false, features = ["bundled"] }
+
+[lints]
+workspace = true
