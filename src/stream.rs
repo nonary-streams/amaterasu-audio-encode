@@ -83,6 +83,33 @@ impl Stream {
         }
     }
 
+    pub fn update_bitrate(&mut self, bitrate: u32) -> EncodeResult<()> {
+        let configuration = Configuration {
+            bitrate,
+            ..self.configuration
+        }
+        .validate()?;
+        if self.failure.is_some() {
+            return Err("stream_failed");
+        }
+        if self.draining {
+            return Err("stream_closed");
+        }
+        if configuration == self.configuration {
+            return Ok(());
+        }
+        if !self.packets.is_empty() || !self.samples.is_empty() {
+            return Err("stream_busy");
+        }
+        // Build and measure the replacement before changing the live stream. A
+        // decoder must reset for the new Opus epoch and packet byte length.
+        let encoder = Encoder::new(configuration)?;
+        self.encoder = encoder;
+        self.configuration = configuration;
+        self.discontinuity_pending = self.origin.is_some();
+        Ok(())
+    }
+
     /// # Safety
     /// The validated frame's sample allocation remains initialized and immutable
     /// for this call. Samples are copied and never retained as caller pointers.

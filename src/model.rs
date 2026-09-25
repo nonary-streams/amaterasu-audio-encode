@@ -58,6 +58,10 @@ pub enum Operation {
     Lookup {
         operation_id: String,
     },
+    Update {
+        stream: u64,
+        bitrate: u32,
+    },
     Close {
         stream: u64,
     },

@@ -152,3 +152,76 @@ fn caller_owned_random_sessions_retry_lookup_close_and_limits_are_bounded() {
     controller.shutdown();
     assert!(controller.streams.is_empty());
 }
+
+#[test]
+fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
+    let mut controller = Controller::new(true);
+    let id = controller
+        .handle("a", open(Some("rate")))
+        .unwrap()
+        .created
+        .unwrap();
+    let update = Operation::Update {
+        stream: id,
+        bitrate: 64_000,
+    };
+    assert_eq!(
+        controller.handle("b", update).err(),
+        Some("stream_not_found")
+    );
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Update {
+                    stream: id,
+                    bitrate: 5999,
+                },
+            )
+            .err(),
+        Some("unsupported_bitrate")
+    );
+    let reply = controller
+        .handle(
+            "a",
+            Operation::Update {
+                stream: id,
+                bitrate: 64_000,
+            },
+        )
+        .unwrap();
+    assert_eq!(reply.payload["bitrate"], 64_000);
+    assert!(reply.payload["packet_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(
+        controller
+            .handle("a", Operation::Status { stream: Some(id) })
+            .unwrap()
+            .payload["streams"][0]["bitrate"],
+        64_000
+    );
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Lookup {
+                    operation_id: "rate".into()
+                }
+            )
+            .unwrap()
+            .payload["bitrate"],
+        64_000
+    );
+    assert_eq!(controller.close("a", id).unwrap()["ok"], true);
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Update {
+                    stream: id,
+                    bitrate: 96_000
+                }
+            )
+            .err(),
+        Some("stream_not_found")
+    );
+}

@@ -59,6 +59,7 @@ impl Controller {
                     None,
                 )
             }
+            Operation::Update { stream, bitrate } => (self.update(owner, stream, bitrate)?, None),
             Operation::Close { stream } => (self.close(owner, stream)?, None),
             Operation::Status { stream } => (self.status(owner, stream), None),
         };
@@ -147,6 +148,17 @@ impl Controller {
         self.owned(owner, id)?;
         self.streams.remove(&id);
         Ok(json!({"ok":true}))
+    }
+
+    fn update(&mut self, owner: &str, id: u64, bitrate: u32) -> EncodeResult<Value> {
+        let stream = self.owned_mut(owner, id).ok_or("stream_not_found")?;
+        stream.update_bitrate(bitrate)?;
+        Ok(json!({
+            "ok": true,
+            "stream": id,
+            "bitrate": stream.configuration.bitrate,
+            "packet_bytes": stream.packet_bytes()
+        }))
     }
 
     fn enumerate(&self) -> Value {
