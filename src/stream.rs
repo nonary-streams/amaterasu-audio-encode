@@ -344,11 +344,21 @@ impl Stream {
             return self.fail(error);
         }
         self.padded_frames += padding;
+        let end_timestamp = if let Some(origin) = self.origin {
+            timestamp(origin, self.encoded_frames)
+        } else {
+            // Recovery can retain old packets without accepting input in the
+            // replacement epoch. EOS must still follow their sample clock.
+            self.packets
+                .back()
+                .and_then(|packet| timestamp(packet.timestamp, u64::from(packet.frames)))
+        }
+        .unwrap_or(0);
         self.packets.push_back(Packet {
             bytes: Vec::new(),
             frames: 0,
             flags: AUDIO_PACKET_END_OF_STREAM,
-            timestamp: timestamp(self.origin.unwrap_or(0), self.encoded_frames).unwrap_or(0),
+            timestamp: end_timestamp,
             sequence: self.output_sequence,
         });
         self.draining = true;

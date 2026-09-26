@@ -453,6 +453,36 @@ fn recovery_removes_failed_drain_end_marker_but_keeps_earlier_audio() {
 }
 
 #[test]
+fn immediate_drain_after_recovery_places_eos_after_retained_audio() {
+    let mut encoder = stream(1, 10);
+    let bytes = vec![0u8; 480 * 2];
+    let timestamp = 1_000_000;
+    // SAFETY: local PCM and sink allocations live through synchronous calls.
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, timestamp, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.queued(), 1);
+    encoder.failure = Some("codec_encode_failed");
+    encoder.recover().unwrap();
+    assert_eq!(encoder.drain(), STATUS_OK);
+    assert_eq!(encoder.queued(), 2);
+
+    let mut sink = Sink::new();
+    sink.reject = true;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_BUSY);
+    sink.reject = false;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0], sink.packets[1]);
+    assert_eq!(sink.packets[1].timestamp, timestamp);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_END_OF_STREAM);
+    assert_eq!(sink.packets[2].sequence, 1);
+    assert_eq!(sink.packets[2].timestamp, timestamp + 10_000);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}
+
+#[test]
 fn failed_drain_recovery_update_and_eos_preserve_input_accounting_and_decoder_reset() {
     let mut encoder = stream(1, 10);
     assert_eq!(encoder.update_bitrate(64_000), Ok(()));
