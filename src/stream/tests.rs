@@ -483,6 +483,43 @@ fn immediate_drain_after_recovery_places_eos_after_retained_audio() {
 }
 
 #[test]
+fn drained_recovery_keeps_eos_clock_after_retained_audio_was_delivered() {
+    let mut encoder = stream(1, 10);
+    let bytes = vec![0u8; 480 * 2];
+    let timestamp = 1_000_000;
+    let frame = input(&bytes, 1, PCM_I16, timestamp, 0);
+    let mut sink = Sink::new();
+
+    // The first real Opus packet survives a failed flush. A rejected delivery
+    // must remain available for retry before the caller recovers the stream.
+    assert_eq!(unsafe { encoder.submit(&frame) }, STATUS_OK);
+    assert_eq!(
+        encoder.drain_with(|_, _, _| Err("codec_encode_failed")),
+        MEDIA_BACKEND_ERROR
+    );
+    sink.reject = true;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_BUSY);
+    sink.reject = false;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0], sink.packets[1]);
+    assert_eq!(sink.packets[1].timestamp, timestamp);
+    assert_eq!(
+        unsafe { encoder.receive(sink.native()) },
+        MEDIA_BACKEND_ERROR
+    );
+
+    encoder.recover().unwrap();
+    assert_eq!(encoder.queued(), 0);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    assert_eq!(unsafe { encoder.submit(&frame) }, MEDIA_CLOSED);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_END_OF_STREAM);
+    assert_eq!(sink.packets[2].sequence, 1);
+    assert_eq!(sink.packets[2].timestamp, timestamp + 10_000);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}
+
+#[test]
 fn failed_drain_recovery_update_and_eos_preserve_input_accounting_and_decoder_reset() {
     let mut encoder = stream(1, 10);
     assert_eq!(encoder.update_bitrate(64_000), Ok(()));

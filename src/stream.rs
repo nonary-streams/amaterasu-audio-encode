@@ -22,6 +22,7 @@ pub struct Stream {
     encoded_frames: u64,
     input_sequence: Option<u64>,
     output_sequence: u64,
+    last_packet_end_timestamp: Option<u64>,
     discontinuity_pending: bool,
     draining: bool,
     eos_delivered: bool,
@@ -45,6 +46,7 @@ impl Stream {
             encoded_frames: 0,
             input_sequence: None,
             output_sequence: 0,
+            last_packet_end_timestamp: None,
             discontinuity_pending: false,
             draining: false,
             eos_delivered: false,
@@ -293,6 +295,10 @@ impl Stream {
         while self.samples.len() >= samples {
             let bytes = encode(&mut self.encoder, &self.samples[..samples], frames)?;
             self.samples.drain(..samples);
+            let packet_timestamp = timestamp(self.origin.unwrap_or(0), self.encoded_frames)
+                .ok_or("timestamp_limit")?;
+            let packet_end_timestamp =
+                timestamp(packet_timestamp, frames as u64).ok_or("timestamp_limit")?;
             self.packets.push_back(Packet {
                 bytes,
                 frames: frames as u32,
@@ -301,10 +307,12 @@ impl Stream {
                 } else {
                     0
                 },
-                timestamp: timestamp(self.origin.unwrap_or(0), self.encoded_frames)
-                    .ok_or("timestamp_limit")?,
+                timestamp: packet_timestamp,
                 sequence: self.output_sequence,
             });
+            // Keep the end time after delivery as well: recovery may drain an
+            // empty replacement epoch after the old queue has been consumed.
+            self.last_packet_end_timestamp = Some(packet_end_timestamp);
             self.discontinuity_pending = false;
             self.output_sequence += 1;
             self.encoded_frames += frames as u64;
@@ -357,9 +365,7 @@ impl Stream {
         } else {
             // Recovery can retain old packets without accepting input in the
             // replacement epoch. EOS must still follow their sample clock.
-            self.packets
-                .back()
-                .and_then(|packet| timestamp(packet.timestamp, u64::from(packet.frames)))
+            self.last_packet_end_timestamp
         }
         .unwrap_or(0);
         self.packets.push_back(Packet {
