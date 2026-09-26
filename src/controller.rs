@@ -290,6 +290,10 @@ impl Controller {
         self.streams.clear();
     }
 
+    pub fn is_shutdown(&self) -> bool {
+        !self.enabled
+    }
+
     /// # Safety
     /// The frame allocation remains valid for the synchronous submit call.
     pub unsafe fn submit(&mut self, owner: &str, id: u64, frame: &AudioFrame) -> Status {

@@ -1,7 +1,7 @@
 use crate::controller::Controller;
 use amaterasu_media::{
     AudioEncoderApi, AudioFrame, AudioPacketSink, INTERFACE_MAJOR, INTERFACE_MINOR,
-    MEDIA_BACKEND_ERROR, MEDIA_BUSY, MEDIA_UNSUPPORTED,
+    MEDIA_BACKEND_ERROR, MEDIA_BUSY, MEDIA_CLOSED, MEDIA_UNSUPPORTED,
 };
 use amaterasu_module_sdk::abi::*;
 use std::{
@@ -149,7 +149,15 @@ unsafe fn with_controller(
     let mut controller = match binding.shared.try_lock() {
         Ok(controller) => controller,
         Err(TryLockError::WouldBlock) => return MEDIA_BUSY,
-        Err(TryLockError::Poisoned(_)) => return MEDIA_BACKEND_ERROR,
+        Err(TryLockError::Poisoned(poisoned)) => {
+            // Module drop can still shut down a poisoned controller. A retained
+            // binding then observes a closed provider, not a live codec fault.
+            return if poisoned.into_inner().is_shutdown() {
+                MEDIA_CLOSED
+            } else {
+                MEDIA_BACKEND_ERROR
+            };
+        }
     };
     operation(&mut controller, &binding.owner)
 }
