@@ -93,10 +93,9 @@ impl ManagedModule for AudioEncodeModule {
                 ) && let Some(stream) = created
                 {
                     // A lost/cancelled open response cannot leave a hidden codec.
-                    let _ = self
-                        .controller
-                        .lock()
-                        .map(|mut controller| controller.close(&caller, stream));
+                    let _ = self.controller.lock().map(|mut controller| {
+                        controller.rollback_unpublished_open(&caller, stream)
+                    });
                 }
                 Ok(())
             }

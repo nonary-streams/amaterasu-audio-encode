@@ -225,3 +225,48 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
         Some("stream_not_found")
     );
 }
+
+#[test]
+fn unpublished_opens_release_operation_capacity_without_erasing_close_tombstones() {
+    let mut controller = Controller::new(true);
+    for index in 0..1025 {
+        let operation_id = format!("cancelled-{index}");
+        let id = controller
+            .handle("a", open(Some(&operation_id)))
+            .unwrap()
+            .created
+            .unwrap();
+        controller.rollback_unpublished_open("b", id);
+        assert_eq!(
+            controller
+                .handle(
+                    "a",
+                    Operation::Lookup {
+                        operation_id: operation_id.clone(),
+                    },
+                )
+                .unwrap()
+                .payload["stream"],
+            id
+        );
+        controller.rollback_unpublished_open("a", id);
+        let replacement = controller
+            .handle("a", open(Some(&operation_id)))
+            .unwrap()
+            .created
+            .unwrap();
+        controller.rollback_unpublished_open("a", replacement);
+        assert!(controller.issued.is_empty());
+    }
+    let id = controller
+        .handle("a", open(Some("published")))
+        .unwrap()
+        .created
+        .unwrap();
+    controller.close("a", id).unwrap();
+    controller.rollback_unpublished_open("a", id);
+    assert_eq!(
+        controller.handle("a", open(Some("published"))).err(),
+        Some("stream_closed")
+    );
+}

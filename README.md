@@ -74,9 +74,12 @@ and failure forbid updates. Status and lookup report the current bitrate and
 packet size. Retrying the original open operation does not undo an update.
 
 A cancelled request is checked before allocation. If completing a newly opened
-stream fails, that allocation is closed. Sessions and retry records are
-in-memory, not durable. Close discards buffered samples/packets; consumers that
-need the tail must drain and receive EOS before closing.
+stream fails, that unpublished allocation and its operation record are removed,
+so a retry can open it and repeated cancellations cannot exhaust operation IDs
+or issued stream IDs. Explicit close still retains its replay tombstone.
+Sessions and retry records are in-memory, not durable. Close discards buffered
+samples/packets; consumers that need the tail must drain and receive EOS before
+closing.
 
 ## Native stream behavior
 

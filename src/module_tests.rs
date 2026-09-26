@@ -72,5 +72,20 @@ fn cancellation_before_dispatch_and_after_open_cannot_leave_hidden_sessions() {
             .unwrap()
             .payload;
         assert_eq!(status["streams"], json!([]));
+        let retry = module
+            .controller
+            .lock()
+            .unwrap()
+            .handle(
+                "consumer",
+                Operation::Open {
+                    channels: 2,
+                    packet_ms: 10,
+                    bitrate: 128_000,
+                    operation_id: Some("cancelled".into()),
+                },
+            )
+            .unwrap();
+        assert!(retry.created.is_some());
     }
 }

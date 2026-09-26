@@ -150,6 +150,18 @@ impl Controller {
         Ok(json!({"ok":true}))
     }
 
+    // Only a failed Complete may call this: a published close must retain its
+    // operation tombstone and issued ID so a replay cannot create another stream.
+    pub fn rollback_unpublished_open(&mut self, owner: &str, id: u64) {
+        if self.owned(owner, id).is_err() {
+            return;
+        }
+        self.streams.remove(&id);
+        self.issued.remove(&id);
+        self.operations
+            .retain(|(record_owner, _), record| record_owner != owner || record.stream != id);
+    }
+
     fn update(&mut self, owner: &str, id: u64, bitrate: u32) -> EncodeResult<Value> {
         let stream = self.owned_mut(owner, id).ok_or("stream_not_found")?;
         stream.update_bitrate(bitrate)?;
