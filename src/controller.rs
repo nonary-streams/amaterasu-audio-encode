@@ -211,9 +211,12 @@ impl Controller {
                     "packet_ms": [5, 10, 20],
                     "bitrate_min": bitrate_min,
                     "bitrate_max": bitrate_max,
+                    "bitrate_min_5ms": Configuration { packet_ms: 5, ..configuration }.bitrate_range().0,
                     "streams": layout.streams,
                     "coupled_streams": layout.coupled_streams,
                     "channel_mapping": layout.mapping,
+                    "wave_channel_mapping": layout.wave_mapping,
+                    "mapping_family": if configuration.channels <= 2 { 0 } else { 1 },
                     "pcm_formats": ["f32", "i16"],
                     "constant_bitrate": true
                 })
@@ -239,6 +242,8 @@ impl Controller {
             "streams": layout.streams,
             "coupled_streams": layout.coupled_streams,
             "channel_mapping": layout.mapping,
+            "wave_channel_mapping": layout.wave_mapping,
+            "mapping_family": if stream.configuration.channels <= 2 { 0 } else { 1 },
             "packet_ms": stream.configuration.packet_ms,
             "bitrate": stream.configuration.bitrate,
             "lookahead_frames": stream.lookahead(),

@@ -8,7 +8,12 @@ pub type EncodeResult<T> = Result<T, &'static str>;
 pub struct ChannelLayout {
     pub streams: i32,
     pub coupled_streams: i32,
+    /// RFC 7845 family-1 mapping in Vorbis speaker order for surround.
     pub mapping: &'static [u8],
+    /// Decoder mapping that instead returns the documented WAVE speaker order.
+    pub wave_mapping: &'static [u8],
+    /// For each Vorbis input channel, its index in interleaved WAVE PCM.
+    pub vorbis_from_wave: &'static [usize],
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -54,23 +59,31 @@ impl Configuration {
                 streams: 1,
                 coupled_streams: 0,
                 mapping: &[0],
+                wave_mapping: &[0],
+                vorbis_from_wave: &[0],
             }),
             2 => Some(ChannelLayout {
                 streams: 1,
                 coupled_streams: 1,
                 mapping: &[0, 1],
+                wave_mapping: &[0, 1],
+                vorbis_from_wave: &[0, 1],
             }),
-            // Interleaved PCM and the Opus mapping both use FL, FR, FC, LFE,
-            // BL, BR, then SL, SR. The receiver needs these mapping values.
+            // Opus family 1 uses Vorbis order. Public PCM retains WAVE order:
+            // FL, FR, FC, LFE, BL, BR, then SL, SR.
             6 => Some(ChannelLayout {
                 streams: 4,
                 coupled_streams: 2,
-                mapping: &[0, 1, 2, 3, 4, 5],
+                mapping: &[0, 4, 1, 2, 3, 5],
+                wave_mapping: &[0, 1, 4, 5, 2, 3],
+                vorbis_from_wave: &[0, 2, 1, 4, 5, 3],
             }),
             8 => Some(ChannelLayout {
                 streams: 5,
                 coupled_streams: 3,
-                mapping: &[0, 1, 2, 3, 4, 5, 6, 7],
+                mapping: &[0, 6, 1, 2, 3, 4, 5, 7],
+                wave_mapping: &[0, 1, 6, 7, 4, 5, 2, 3],
+                vorbis_from_wave: &[0, 2, 1, 6, 7, 4, 5, 3],
             }),
             _ => None,
         }
@@ -79,6 +92,7 @@ impl Configuration {
     pub fn bitrate_range(self) -> (u32, u32) {
         match self.channels {
             6 => (256_000, 1_536_000),
+            8 if self.packet_ms == 5 => (512_000, 2_048_000),
             8 => (450_000, 2_048_000),
             _ => (6_000, 512_000),
         }

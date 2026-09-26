@@ -32,7 +32,9 @@ Linux GNU and Microsoft SDK/MSVC cross tools. Cross-compilation checks do not
 qualify target execution, final linkage, device capture, or network streaming.
 
 Primary references: [opusic-sys](https://github.com/DoumanAsh/opusic-sys),
-[reference Opus encoder API](https://www.opus-codec.org/docs/opus_api-1.3.1/group__opus__encoder.html).
+[reference Opus encoder API](https://www.opus-codec.org/docs/opus_api-1.3.1/group__opus__encoder.html),
+[libopus multistream API](https://www.opus-codec.org/docs/opus_api-1.6/opus__multistream_8h.html),
+and [RFC 7845 channel mapping](https://www.rfc-editor.org/rfc/rfc7845.html#section-5.1.1.2).
 
 ## Control contract
 
@@ -44,7 +46,7 @@ provided by the runtime, not a caller-supplied payload identity.
 | Action | Fields | Result |
 | --- | --- | --- |
 | `enumerate` | none | `ok`, `enabled`, `encoders`; empty when disabled |
-| `open` | `channels` (1, 2, 6, or 8; default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` within the channel range below (default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `streams`, `coupled_streams`, `channel_mapping`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
+| `open` | `channels` (1, 2, 6, or 8; default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` within the channel range below (default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `streams`, `coupled_streams`, `mapping_family`, `channel_mapping`, `wave_channel_mapping`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
 | `update` | `stream`, `bitrate` within the channel range below | `ok`, `stream`, current `bitrate` and `packet_bytes` |
 | `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
@@ -53,21 +55,29 @@ provided by the runtime, not a caller-supplied payload identity.
 
 Errors are `{"ok":false,"code":"..."}` without PCM or backend diagnostics.
 
-| Channels | PCM and Opus channel order | Streams | Coupled | Bitrate range (bps) |
+| Channels | PCM channel order | Streams | Coupled | Bitrate range (bps) |
 | --- | --- | ---: | ---: | ---: |
 | 1 | mono | 1 | 0 | 6000–512000 |
 | 2 | front left, front right | 1 | 1 | 6000–512000 |
 | 6 | front left, front right, front center, LFE, back left, back right | 4 | 2 | 256000–1536000 |
-| 8 | the six channels above, then side left, side right | 5 | 3 | 450000–2048000 |
+| 8 | the six channels above, then side left, side right | 5 | 3 | 450000–2048000 (512000 minimum at 5 ms) |
 
 For 5.1 and 7.1, callers must supply a bitrate explicitly; the omitted
 128000 bps default applies only to mono and stereo.
 
-`channel_mapping` is the identity index array for the stated order. The
-consumer must configure its Opus multistream decoder with the reported stream
-counts and mapping. The native packet ABI carries the channel count but not
-the mapping; the decoder must retain the open/status metadata for that stream.
-`enumerate` lists each channel layout and its bitrate range.
+Input PCM retains the WAVE speaker order in the table. For 5.1/7.1, the
+encoder reorders it to RFC 7845 family-1 Vorbis order before native Opus
+surround encoding: FL, FC, FR, BL, BR, LFE for 5.1; FL, FC, FR, SL, SR, BL,
+BR, LFE for 7.1. Native surround encoding couples the front and surround
+left/right pairs and gives LFE its own low-frequency stream. `mapping_family`
+is 1 for surround and 0 for mono/stereo. `channel_mapping` is the canonical
+Vorbis-order decoder mapping (`[0,4,1,2,3,5]` for 5.1 and
+`[0,6,1,2,3,4,5,7]` for 7.1). `wave_channel_mapping` is a decoder mapping
+that instead produces the WAVE order above (`[0,1,4,5,2,3]` and
+`[0,1,6,7,4,5,2,3]`). The native packet ABI carries the channel count but
+not these mappings; a decoder must retain the open/status metadata. `enumerate`
+lists each channel layout and bitrate range, including `bitrate_min_5ms`.
+
 Disabled open returns `disabled`. Unsupported settings report specific format
 errors. Unknown/foreign IDs are indistinguishable; filtered status returns an
 empty list. Stream IDs are nonzero OS-random 64-bit integers. Consumers must
@@ -129,8 +139,8 @@ reports that length before transport encryption. Startup measures the actual cod
 bitrate rounding with silence, then resets it before accepting real input. Libopus
 generates valid Opus padding; the transport must never append arbitrary bytes to
 equalize packet sizes. Variable-bitrate output is not exposed in this profile.
-Mono/stereo use a single Opus encoder; 5.1/7.1 use the native Opus multistream
-encoder. The largest supported 7.1 profile produces 5120-byte 20 ms packets,
+Mono/stereo use a single Opus encoder; 5.1/7.1 use the native Opus family-1
+surround encoder. The largest supported 7.1 profile produces 5120-byte 20 ms packets,
 within the encoded-audio ABI's 64 KiB limit. Transport consumers must support
 that size before enabling surround streaming.
 A stream retains fewer than one packet of partial

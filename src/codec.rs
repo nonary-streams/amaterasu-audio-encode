@@ -14,6 +14,7 @@ enum CodecState {
 pub struct Encoder {
     state: CodecState,
     channels: usize,
+    vorbis_from_wave: &'static [usize],
     pub lookahead: u32,
     pub packet_bytes: usize,
 }
@@ -26,8 +27,12 @@ impl Encoder {
     pub fn new(configuration: Configuration) -> EncodeResult<Self> {
         let layout = configuration.layout().ok_or("unsupported_channels")?;
         let mut error = 0;
-        // SAFETY: configuration validation fixes channels and layout. The
-        // mapping is static and remains live throughout native construction.
+        let mut streams = 0;
+        let mut coupled_streams = 0;
+        let mut mapping = [0u8; 8];
+        // SAFETY: validated channels and live output allocations satisfy the
+        // native constructor. The surround API enables LFE-specific coding
+        // and returns the RFC 7845 family-1 Vorbis mapping.
         let state = unsafe {
             if configuration.channels <= 2 {
                 NonNull::new(opus::opus_encoder_create(
@@ -38,12 +43,13 @@ impl Encoder {
                 ))
                 .map(CodecState::Single)
             } else {
-                NonNull::new(opus::opus_multistream_encoder_create(
+                NonNull::new(opus::opus_multistream_surround_encoder_create(
                     SAMPLE_RATE as i32,
                     configuration.channels as i32,
-                    layout.streams,
-                    layout.coupled_streams,
-                    layout.mapping.as_ptr(),
+                    1,
+                    &mut streams,
+                    &mut coupled_streams,
+                    mapping.as_mut_ptr(),
                     opus::OPUS_APPLICATION_RESTRICTED_LOWDELAY,
                     &mut error,
                 ))
@@ -54,11 +60,19 @@ impl Encoder {
         let mut encoder = Self {
             state,
             channels: configuration.channels as usize,
+            vorbis_from_wave: layout.vorbis_from_wave,
             lookahead: 0,
             packet_bytes: 0,
         };
         if error != opus::OPUS_OK {
             return Err("codec_initialization_failed");
+        }
+        if configuration.channels > 2
+            && (streams != layout.streams
+                || coupled_streams != layout.coupled_streams
+                || mapping[..configuration.channels as usize] != *layout.mapping)
+        {
+            return Err("codec_mapping_mismatch");
         }
         encoder.configure_constant_bitrate(configuration.bitrate)?;
         encoder.lookahead = encoder.read_lookahead()?;
@@ -172,9 +186,13 @@ impl Encoder {
                 )
             },
             CodecState::Multistream(pointer) => unsafe {
+                let reordered = samples
+                    .chunks_exact(self.channels)
+                    .flat_map(|frame| self.vorbis_from_wave.iter().map(|index| frame[*index]))
+                    .collect::<Vec<_>>();
                 opus::opus_multistream_encode_float(
                     pointer.as_ptr(),
-                    samples.as_ptr(),
+                    reordered.as_ptr(),
                     frames as i32,
                     output.as_mut_ptr(),
                     output.len() as i32,
@@ -264,12 +282,21 @@ mod tests {
         ] {
             for packet_ms in [5, 10, 20] {
                 for bitrate in bitrates {
+                    if channels == 8 && packet_ms == 5 && bitrate == 450_000 {
+                        continue;
+                    }
                     let configuration = Configuration {
                         channels,
                         packet_ms,
                         bitrate,
                     };
                     let layout = configuration.layout().unwrap();
+                    let (expected_mapping, vorbis_to_wave): (&[u8], &[usize]) = if channels == 6 {
+                        (&[0, 4, 1, 2, 3, 5], &[0, 2, 1, 4, 5, 3])
+                    } else {
+                        (&[0, 6, 1, 2, 3, 4, 5, 7], &[0, 2, 1, 6, 7, 4, 5, 3])
+                    };
+                    assert_eq!(layout.mapping, expected_mapping);
                     let mut encoder = Encoder::new(configuration).unwrap();
                     let mut error = 0;
                     // SAFETY: the static mapping outlives this independently
@@ -280,7 +307,7 @@ mod tests {
                             channels as i32,
                             layout.streams,
                             layout.coupled_streams,
-                            layout.mapping.as_ptr(),
+                            expected_mapping.as_ptr(),
                             &mut error,
                         )
                     };
@@ -293,8 +320,13 @@ mod tests {
                         let samples = (0..frames)
                             .flat_map(|sample| {
                                 (0..channels).map(move |channel| {
+                                    let frequency = if channel == 3 {
+                                        60.0
+                                    } else {
+                                        170.0 + 83.0 * channel as f32
+                                    };
                                     let phase = (packet_index * frames + sample) as f32
-                                        * (170.0 + 83.0 * channel as f32)
+                                        * frequency
                                         * std::f32::consts::TAU
                                         / SAMPLE_RATE as f32;
                                     phase.sin() * 0.5
@@ -330,10 +362,19 @@ mod tests {
                     );
                     // The independent decoder must retain the channel order,
                     // rather than merely producing some nonzero output.
-                    for channel in 0..channels as usize {
+                    for (channel, &wave_channel) in vorbis_to_wave.iter().enumerate() {
+                        if wave_channel == 3 {
+                            // LFE is encoded with a deliberately narrow band
+                            // and a small rate; its isolation is tested below.
+                            continue;
+                        }
                         let amplitudes = (0..channels as usize)
                             .map(|tone_channel| {
-                                let frequency = 170.0 + 83.0 * tone_channel as f64;
+                                let frequency = if tone_channel == 3 {
+                                    60.0
+                                } else {
+                                    170.0 + 83.0 * tone_channel as f64
+                                };
                                 let (sin, cos) = decoded_pcm
                                     .chunks_exact(channels as usize)
                                     .skip(2 * frames)
@@ -351,17 +392,164 @@ mod tests {
                         let other = amplitudes
                             .iter()
                             .enumerate()
-                            .filter(|(index, _)| *index != channel)
+                            .filter(|(index, _)| *index != wave_channel)
                             .map(|(_, amplitude)| *amplitude)
                             .fold(0.0f64, f64::max);
                         assert!(
-                            amplitudes[channel] > other * 1.5,
-                            "channels={channels} packet_ms={packet_ms} bitrate={bitrate} channel={channel} amplitudes={amplitudes:?}"
+                            amplitudes[wave_channel] > other * 1.5,
+                            "channels={channels} packet_ms={packet_ms} bitrate={bitrate} vorbis_channel={channel} wave_channel={wave_channel} amplitudes={amplitudes:?}"
                         );
                     }
                     // SAFETY: the decoder is uniquely owned by this test.
                     unsafe { opus::opus_multistream_decoder_destroy(decoder) };
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn surround_lfe_and_center_remain_separate_speakers() {
+        for (channels, bitrate, mapping) in [
+            (6, 256_000, &[0u8, 4, 1, 2, 3, 5][..]),
+            (8, 450_000, &[0u8, 6, 1, 2, 3, 4, 5, 7][..]),
+        ] {
+            let layout = Configuration {
+                channels,
+                packet_ms: 10,
+                bitrate,
+            }
+            .layout()
+            .unwrap();
+            assert_eq!(layout.mapping, mapping);
+            // Decoder channel indices 0/1 are coupled front L/R. In 5.1,
+            // 2/3 are rear L/R; in 7.1, 2/3 are side L/R and 4/5 rear L/R.
+            assert_eq!(&layout.wave_mapping[..2], &[0, 1]);
+            if channels == 6 {
+                assert_eq!(&layout.wave_mapping[4..6], &[2, 3]);
+            } else {
+                assert_eq!(&layout.wave_mapping[6..8], &[2, 3]);
+                assert_eq!(&layout.wave_mapping[4..6], &[4, 5]);
+            }
+            assert_eq!(layout.wave_mapping[2], (2 * layout.coupled_streams) as u8);
+            assert_eq!(
+                layout.wave_mapping[3],
+                (layout.streams + layout.coupled_streams - 1) as u8
+            );
+            for (wave_speaker, frequency, vorbis_speaker) in
+                [(3, 60.0f32, channels as usize - 1), (2, 400.0, 1)]
+            {
+                let configuration = Configuration {
+                    channels,
+                    packet_ms: 10,
+                    bitrate,
+                };
+                let mut encoder = Encoder::new(configuration).unwrap();
+                let mut error = 0;
+                // SAFETY: this independent decoder uses the RFC family-1
+                // mapping, not the encoder's reported map, and remains live.
+                let decoder = unsafe {
+                    opus::opus_multistream_decoder_create(
+                        SAMPLE_RATE as i32,
+                        channels as i32,
+                        configuration.layout().unwrap().streams,
+                        configuration.layout().unwrap().coupled_streams,
+                        mapping.as_ptr(),
+                        &mut error,
+                    )
+                };
+                assert_eq!(error, opus::OPUS_OK);
+                assert!(!decoder.is_null());
+                let wave_decoder = unsafe {
+                    opus::opus_multistream_decoder_create(
+                        SAMPLE_RATE as i32,
+                        channels as i32,
+                        layout.streams,
+                        layout.coupled_streams,
+                        layout.wave_mapping.as_ptr(),
+                        &mut error,
+                    )
+                };
+                assert_eq!(error, opus::OPUS_OK);
+                assert!(!wave_decoder.is_null());
+                let frames = configuration.packet_frames();
+                let mut energy = vec![0.0f64; channels as usize];
+                let mut wave_energy = vec![0.0f64; channels as usize];
+                for packet_index in 0..20 {
+                    let mut input = vec![0.0f32; frames * channels as usize];
+                    for frame in 0..frames {
+                        let phase = (packet_index * frames + frame) as f32
+                            * frequency
+                            * std::f32::consts::TAU
+                            / SAMPLE_RATE as f32;
+                        input[frame * channels as usize + wave_speaker] = phase.sin() * 0.5;
+                    }
+                    let bytes = encoder.encode(&input, frames).unwrap();
+                    let mut output = vec![0.0f32; input.len()];
+                    let mut wave_output = vec![0.0f32; input.len()];
+                    // SAFETY: live packet and full frame output allocation.
+                    assert_eq!(
+                        unsafe {
+                            opus::opus_multistream_decode_float(
+                                decoder,
+                                bytes.as_ptr(),
+                                bytes.len() as i32,
+                                output.as_mut_ptr(),
+                                frames as i32,
+                                0,
+                            )
+                        },
+                        frames as i32
+                    );
+                    // SAFETY: separate live decoder and full frame output.
+                    assert_eq!(
+                        unsafe {
+                            opus::opus_multistream_decode_float(
+                                wave_decoder,
+                                bytes.as_ptr(),
+                                bytes.len() as i32,
+                                wave_output.as_mut_ptr(),
+                                frames as i32,
+                                0,
+                            )
+                        },
+                        frames as i32
+                    );
+                    for sample in output.chunks_exact(channels as usize) {
+                        for (accumulator, value) in energy.iter_mut().zip(sample) {
+                            *accumulator += f64::from(*value).powi(2);
+                        }
+                    }
+                    for sample in wave_output.chunks_exact(channels as usize) {
+                        for (accumulator, value) in wave_energy.iter_mut().zip(sample) {
+                            *accumulator += f64::from(*value).powi(2);
+                        }
+                    }
+                }
+                assert!(energy[vorbis_speaker] > 1.0, "energy={energy:?}");
+                assert!(
+                    wave_energy[wave_speaker] > 1.0,
+                    "wave_energy={wave_energy:?}"
+                );
+                for (speaker, other) in energy.iter().enumerate() {
+                    if speaker != vorbis_speaker {
+                        assert!(
+                            *other < energy[vorbis_speaker] * 0.01,
+                            "channels={channels} speaker={speaker} energy={energy:?}"
+                        );
+                    }
+                }
+                for (speaker, other) in wave_energy.iter().enumerate() {
+                    if speaker != wave_speaker {
+                        assert!(
+                            *other < wave_energy[wave_speaker] * 0.01,
+                            "channels={channels} speaker={speaker} wave_energy={wave_energy:?}"
+                        );
+                    }
+                }
+                // SAFETY: unique independent decoder allocation.
+                unsafe { opus::opus_multistream_decoder_destroy(decoder) };
+                // SAFETY: separate unique decoder allocation.
+                unsafe { opus::opus_multistream_decoder_destroy(wave_decoder) };
             }
         }
     }

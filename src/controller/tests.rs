@@ -286,6 +286,21 @@ fn surround_open_reports_the_decoder_layout_and_releases_the_stream() {
             .unwrap();
         assert_eq!(entry["bitrate_max"], maximum);
         assert_eq!(entry["bitrate_min"], minimum);
+        assert_eq!(
+            entry["bitrate_min_5ms"],
+            if channels == 8 { 512_000 } else { minimum }
+        );
+        if channels == 8 {
+            assert_eq!(
+                (Configuration {
+                    channels,
+                    packet_ms: 5,
+                    bitrate: 450_000
+                })
+                .validate(),
+                Err("unsupported_bitrate")
+            );
+        }
         let opened = controller
             .handle(
                 "owner",
@@ -300,10 +315,17 @@ fn surround_open_reports_the_decoder_layout_and_releases_the_stream() {
         let id = opened.created.unwrap();
         assert_eq!(opened.payload["streams"], streams);
         assert_eq!(opened.payload["coupled_streams"], coupled);
-        assert_eq!(
-            opened.payload["channel_mapping"],
-            json!((0..channels).collect::<Vec<_>>())
-        );
+        let (vorbis_mapping, wave_mapping) = if channels == 6 {
+            (json!([0, 4, 1, 2, 3, 5]), json!([0, 1, 4, 5, 2, 3]))
+        } else {
+            (
+                json!([0, 6, 1, 2, 3, 4, 5, 7]),
+                json!([0, 1, 6, 7, 4, 5, 2, 3]),
+            )
+        };
+        assert_eq!(opened.payload["mapping_family"], 1);
+        assert_eq!(opened.payload["channel_mapping"], vorbis_mapping);
+        assert_eq!(opened.payload["wave_channel_mapping"], wave_mapping);
         assert!(opened.payload["packet_bytes"].as_u64().unwrap() > 0);
         assert_eq!(controller.close("owner", id).unwrap()["ok"], true);
         assert_eq!(controller.drain("owner", id), MEDIA_CLOSED);
