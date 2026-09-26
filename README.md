@@ -50,7 +50,7 @@ provided by the runtime, not a caller-supplied payload identity.
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
 | `update` | `stream`, `bitrate` within the channel range below | `ok`, `stream`, current `bitrate` and `packet_bytes` |
 | `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
-| `close` | `stream` | `{"ok":true}`, or `stream_not_found` |
+| `close` | `stream` | `{"ok":true}` for the owner, including a retry after release; `stream_not_found` for unknown or foreign IDs |
 | `status` | optional `stream` | `ok`, `enabled`, caller-owned `streams` metadata and health |
 
 Errors are `{"ok":false,"code":"..."}` without PCM or backend diagnostics.
@@ -121,7 +121,9 @@ so a retry can open it and repeated cancellations cannot exhaust operation IDs
 or issued stream IDs. Explicit close still retains its replay tombstone.
 Sessions and retry records are in-memory, not durable. Close discards buffered
 samples/packets; consumers that need the tail must drain and receive EOS before
-closing.
+closing. A close retry after a lost response acknowledges the owner's already
+released stream without recreating it. Other callers still receive
+`stream_not_found`; native submit, receive, and drain remain closed.
 
 ## Native stream behavior
 

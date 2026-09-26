@@ -686,3 +686,61 @@ fn unpublished_opens_release_operation_capacity_without_erasing_close_tombstones
         Some("stream_closed")
     );
 }
+
+#[test]
+fn close_retry_after_failed_recovery_releases_once_and_keeps_owner_isolation() {
+    let mut controller = Controller::new(true);
+    let id = controller
+        .handle("owner", open(Some("lease")))
+        .unwrap()
+        .created
+        .unwrap();
+    controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
+    assert_eq!(
+        controller
+            .handle(
+                "foreign",
+                Operation::Recover {
+                    stream: id,
+                    bitrate: None,
+                },
+            )
+            .err(),
+        Some("stream_not_found")
+    );
+    assert_eq!(controller.close("foreign", id), Err("stream_not_found"));
+    assert_eq!(controller.close("owner", id).unwrap(), json!({"ok":true}));
+    assert!(!controller.streams.contains_key(&id));
+
+    // The first close response may be lost. Repeating it must acknowledge the
+    // already released lease without revealing its ID to another principal.
+    assert_eq!(controller.close("owner", id).unwrap(), json!({"ok":true}));
+    assert_eq!(controller.close("foreign", id), Err("stream_not_found"));
+    assert_eq!(controller.drain("owner", id), MEDIA_CLOSED);
+    assert_eq!(
+        controller
+            .handle(
+                "owner",
+                Operation::Recover {
+                    stream: id,
+                    bitrate: None,
+                },
+            )
+            .err(),
+        Some("stream_not_found")
+    );
+    assert_eq!(
+        controller.handle("owner", open(Some("lease"))).err(),
+        Some("stream_closed")
+    );
+    let replacement = controller
+        .handle("owner", open(None))
+        .unwrap()
+        .created
+        .unwrap();
+    assert_ne!(replacement, id);
+    assert_eq!(
+        controller.close("owner", replacement).unwrap(),
+        json!({"ok":true})
+    );
+}

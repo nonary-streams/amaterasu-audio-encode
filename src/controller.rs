@@ -19,6 +19,7 @@ pub struct Controller {
     streams: BTreeMap<u64, Stream>,
     operations: BTreeMap<(String, String), Record>,
     issued: BTreeSet<u64>,
+    closed: BTreeMap<u64, String>,
 }
 
 impl Controller {
@@ -28,6 +29,7 @@ impl Controller {
             streams: BTreeMap::new(),
             operations: BTreeMap::new(),
             issued: BTreeSet::new(),
+            closed: BTreeMap::new(),
         }
     }
 
@@ -146,8 +148,16 @@ impl Controller {
     }
 
     pub fn close(&mut self, owner: &str, id: u64) -> EncodeResult<Value> {
-        self.owned(owner, id)?;
-        self.streams.remove(&id);
+        if self.owned(owner, id).is_ok() {
+            self.streams.remove(&id);
+            self.closed.insert(id, owner.into());
+        } else if self
+            .closed
+            .get(&id)
+            .is_none_or(|closed_owner| closed_owner != owner)
+        {
+            return Err("stream_not_found");
+        }
         Ok(json!({"ok":true}))
     }
 
