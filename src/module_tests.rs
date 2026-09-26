@@ -89,3 +89,70 @@ fn cancellation_before_dispatch_and_after_open_cannot_leave_hidden_sessions() {
         assert!(retry.created.is_some());
     }
 }
+
+#[test]
+fn module_drop_releases_codec_sessions_after_controller_poison() {
+    for poison_lock in [false, true] {
+        let mut host = Host {
+            replies: VecDeque::from([
+                Response::Result {
+                    payload: json!({"enabled":true}),
+                },
+                Response::Ok,
+                Response::Ok,
+            ]),
+            complete: None,
+        };
+        let endpoint = HostApi {
+            header: AbiHeader::of::<HostApi>(),
+            context: (&mut host as *mut Host).cast(),
+            invoke,
+        };
+        // SAFETY: host state remains live until after module destruction.
+        let module =
+            AudioEncodeModule::start(unsafe { RuntimeClient::from_endpoint(endpoint) }).unwrap();
+        let shared = module.controller.clone();
+        let stream = shared
+            .lock()
+            .unwrap()
+            .handle(
+                "consumer",
+                Operation::Open {
+                    channels: 2,
+                    packet_ms: 10,
+                    bitrate: 128_000,
+                    operation_id: None,
+                },
+            )
+            .unwrap()
+            .created
+            .unwrap();
+        if poison_lock {
+            let poisoned = shared.clone();
+            assert!(
+                std::thread::spawn(move || {
+                    let _guard = poisoned.lock().unwrap();
+                    panic!("poison controller after opening codec");
+                })
+                .join()
+                .is_err()
+            );
+        }
+
+        drop(module);
+        assert_eq!(shared.is_poisoned(), poison_lock);
+        let mut controller = shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = controller
+            .handle("consumer", Operation::Status { stream: None })
+            .unwrap()
+            .payload;
+        assert_eq!(status["enabled"], false);
+        assert_eq!(status["streams"], json!([]));
+        assert_eq!(
+            controller.close("consumer", stream),
+            Err("stream_not_found")
+        );
+    }
+}

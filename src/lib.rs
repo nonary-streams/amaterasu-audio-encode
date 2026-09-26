@@ -106,9 +106,13 @@ impl ManagedModule for AudioEncodeModule {
 
 impl Drop for AudioEncodeModule {
     fn drop(&mut self) {
-        if let Ok(mut controller) = self.controller.lock() {
-            controller.shutdown();
-        }
+        // A panic in a prior control operation can poison this mutex. Native
+        // bindings still hold the controller Arc, so unload must clear codec
+        // state even when the lock reports poison.
+        self.controller
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutdown();
     }
 }
 
