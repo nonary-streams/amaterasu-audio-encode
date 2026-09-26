@@ -4,6 +4,13 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub const MAX_PACKETS: usize = 24;
 pub type EncodeResult<T> = Result<T, &'static str>;
 
+#[derive(Clone, Copy)]
+pub struct ChannelLayout {
+    pub streams: i32,
+    pub coupled_streams: i32,
+    pub mapping: &'static [u8],
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
@@ -24,13 +31,14 @@ impl Default for Configuration {
 
 impl Configuration {
     pub fn validate(self) -> EncodeResult<Self> {
-        if !matches!(self.channels, 1 | 2) {
+        if self.layout().is_none() {
             return Err("unsupported_channels");
         }
         if !matches!(self.packet_ms, 5 | 10 | 20) {
             return Err("unsupported_packet_duration");
         }
-        if !(6000..=512_000).contains(&self.bitrate) {
+        let (minimum, maximum) = self.bitrate_range();
+        if !(minimum..=maximum).contains(&self.bitrate) {
             return Err("unsupported_bitrate");
         }
         Ok(self)
@@ -38,6 +46,42 @@ impl Configuration {
 
     pub fn packet_frames(self) -> usize {
         (SAMPLE_RATE / 1000 * self.packet_ms) as usize
+    }
+
+    pub fn layout(self) -> Option<ChannelLayout> {
+        match self.channels {
+            1 => Some(ChannelLayout {
+                streams: 1,
+                coupled_streams: 0,
+                mapping: &[0],
+            }),
+            2 => Some(ChannelLayout {
+                streams: 1,
+                coupled_streams: 1,
+                mapping: &[0, 1],
+            }),
+            // Interleaved PCM and the Opus mapping both use FL, FR, FC, LFE,
+            // BL, BR, then SL, SR. The receiver needs these mapping values.
+            6 => Some(ChannelLayout {
+                streams: 4,
+                coupled_streams: 2,
+                mapping: &[0, 1, 2, 3, 4, 5],
+            }),
+            8 => Some(ChannelLayout {
+                streams: 5,
+                coupled_streams: 3,
+                mapping: &[0, 1, 2, 3, 4, 5, 6, 7],
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn bitrate_range(self) -> (u32, u32) {
+        match self.channels {
+            6 => (256_000, 1_536_000),
+            8 => (450_000, 2_048_000),
+            _ => (6_000, 512_000),
+        }
     }
 }
 

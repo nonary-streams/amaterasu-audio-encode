@@ -44,14 +44,30 @@ provided by the runtime, not a caller-supplied payload identity.
 | Action | Fields | Result |
 | --- | --- | --- |
 | `enumerate` | none | `ok`, `enabled`, `encoders`; empty when disabled |
-| `open` | `channels` (1 or 2, default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` (6000–512000 bps, default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
+| `open` | `channels` (1, 2, 6, or 8; default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` within the channel range below (default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `streams`, `coupled_streams`, `channel_mapping`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
-| `update` | `stream`, `bitrate` (6000–512000 bps) | `ok`, `stream`, current `bitrate` and `packet_bytes` |
+| `update` | `stream`, `bitrate` within the channel range below | `ok`, `stream`, current `bitrate` and `packet_bytes` |
 | `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
 | `close` | `stream` | `{"ok":true}`, or `stream_not_found` |
 | `status` | optional `stream` | `ok`, `enabled`, caller-owned `streams` metadata and health |
 
 Errors are `{"ok":false,"code":"..."}` without PCM or backend diagnostics.
+
+| Channels | PCM and Opus channel order | Streams | Coupled | Bitrate range (bps) |
+| --- | --- | ---: | ---: | ---: |
+| 1 | mono | 1 | 0 | 6000–512000 |
+| 2 | front left, front right | 1 | 1 | 6000–512000 |
+| 6 | front left, front right, front center, LFE, back left, back right | 4 | 2 | 256000–1536000 |
+| 8 | the six channels above, then side left, side right | 5 | 3 | 450000–2048000 |
+
+For 5.1 and 7.1, callers must supply a bitrate explicitly; the omitted
+128000 bps default applies only to mono and stereo.
+
+`channel_mapping` is the identity index array for the stated order. The
+consumer must configure its Opus multistream decoder with the reported stream
+counts and mapping. The native packet ABI carries the channel count but not
+the mapping; the decoder must retain the open/status metadata for that stream.
+`enumerate` lists each channel layout and its bitrate range.
 Disabled open returns `disabled`. Unsupported settings report specific format
 errors. Unknown/foreign IDs are indistinguishable; filtered status returns an
 empty list. Stream IDs are nonzero OS-random 64-bit integers. Consumers must
@@ -99,10 +115,10 @@ closing.
 
 ## Native stream behavior
 
-`AudioEncoderApi` has `submit`, `receive`, and `drain`. It accepts 48 kHz mono
-or stereo PCM only, with stereo channels ordered left/right. Input may switch
+`AudioEncoderApi` has `submit`, `receive`, and `drain`. It accepts 48 kHz mono,
+stereo, 5.1, or 7.1 PCM in the channel order above. Input may switch
 between interleaved little-endian F32 and I16 chunks, each bounded to 100 ms by
-`AudioFrame`. It performs no resampling, channel remapping, or surround encoding.
+`AudioFrame`. It performs no resampling or channel remapping.
 I16 maps by division by 32768. Finite F32 values are clipped to [-1, 1]; NaN and
 infinity are rejected before acceptance. `AUDIO_SILENT` supplies zeros regardless
 of sample bytes. Bytewise conversion supports unaligned input allocations.
@@ -113,8 +129,12 @@ reports that length before transport encryption. Startup measures the actual cod
 bitrate rounding with silence, then resets it before accepting real input. Libopus
 generates valid Opus padding; the transport must never append arbitrary bytes to
 equalize packet sizes. Variable-bitrate output is not exposed in this profile.
+Mono/stereo use a single Opus encoder; 5.1/7.1 use the native Opus multistream
+encoder. The largest supported 7.1 profile produces 5120-byte 20 ms packets,
+within the encoded-audio ABI's 64 KiB limit. Transport consumers must support
+that size before enabling surround streaming.
 A stream retains fewer than one packet of partial
-PCM between submissions and at most 24 output packets, each capped at 4000
+PCM between submissions and at most 24 output packets, each capped at 16000
 bytes. At most one 100 ms chunk is copied while submitting. Every successful
 submit accepts all samples. `MEDIA_BUSY` accepts nothing and leaves timing,
 codec state, and output unchanged. Backend errors fail the stream visibly;
@@ -167,9 +187,10 @@ sandbox arbitrary native code.
 
 ## Verification and remaining scope
 
-Tests decode real encoder output with an independently allocated reference
-libopus decoder, measuring tone reconstruction for mono/stereo, F32/I16, and
-all three packet durations. Tests also cover PCM clipping/byte order, timestamp
+Tests decode real encoder output with independently allocated reference
+libopus decoders, measuring tone reconstruction for mono/stereo, F32/I16, and
+all three packet durations, plus multistream decoding for 5.1/7.1 at base and
+high bitrates. Tests also cover PCM clipping/byte order, timestamp
 bounds, queue retry, partial buffering, drain padding, rejected EOS, ownership,
 bitrate update boundaries, reentrant callbacks, close/drop, and cancellation
 before and after allocation.
@@ -178,6 +199,6 @@ Opus packet delivery, including exact rejected-packet retry and one EOS.
 
 This module supplies a baseline codec provider. Capture-to-encoder coordination,
 including invoking live updates from the current stream-session consumer,
-resampling, surround/multistream mapping, RTP/FEC/encryption, network delivery,
+resampling, surround decoder negotiation, RTP/FEC/encryption, network delivery,
 Moonlight audio negotiation, and end-to-end playback are separate requirements.
 No working remote audio stream or production Moonlight qualification is claimed.

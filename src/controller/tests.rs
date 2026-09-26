@@ -47,7 +47,7 @@ fn disabled_controls_do_not_allocate_and_validation_is_explicit() {
     for (configuration, code) in [
         (
             Configuration {
-                channels: 6,
+                channels: 4,
                 ..Configuration::default()
             },
             "unsupported_channels",
@@ -249,6 +249,65 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
             .err(),
         Some("stream_not_found")
     );
+}
+
+#[test]
+fn surround_open_reports_the_decoder_layout_and_releases_the_stream() {
+    let mut controller = Controller::new(true);
+    let catalog = controller
+        .handle("owner", Operation::Enumerate)
+        .unwrap()
+        .payload;
+    for (channels, streams, coupled, maximum) in [(6, 4, 2, 1_536_000), (8, 5, 3, 2_048_000)] {
+        let minimum = if channels == 6 { 256_000 } else { 450_000 };
+        assert_eq!(
+            (Configuration {
+                channels,
+                packet_ms: 10,
+                bitrate: minimum - 1
+            })
+            .validate(),
+            Err("unsupported_bitrate")
+        );
+        assert_eq!(
+            (Configuration {
+                channels,
+                packet_ms: 10,
+                bitrate: maximum + 1
+            })
+            .validate(),
+            Err("unsupported_bitrate")
+        );
+        let entry = catalog["encoders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["channels"] == json!([channels]))
+            .unwrap();
+        assert_eq!(entry["bitrate_max"], maximum);
+        assert_eq!(entry["bitrate_min"], minimum);
+        let opened = controller
+            .handle(
+                "owner",
+                Operation::Open {
+                    channels,
+                    packet_ms: 10,
+                    bitrate: maximum,
+                    operation_id: None,
+                },
+            )
+            .unwrap();
+        let id = opened.created.unwrap();
+        assert_eq!(opened.payload["streams"], streams);
+        assert_eq!(opened.payload["coupled_streams"], coupled);
+        assert_eq!(
+            opened.payload["channel_mapping"],
+            json!((0..channels).collect::<Vec<_>>())
+        );
+        assert!(opened.payload["packet_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(controller.close("owner", id).unwrap()["ok"], true);
+        assert_eq!(controller.drain("owner", id), MEDIA_CLOSED);
+    }
 }
 
 #[test]

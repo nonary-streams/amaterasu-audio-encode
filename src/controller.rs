@@ -182,16 +182,43 @@ impl Controller {
 
     fn enumerate(&self) -> Value {
         let encoders = if self.enabled {
-            vec![json!({
-                "codec": "opus",
-                "sample_rate": SAMPLE_RATE,
-                "channels": [1, 2],
-                "packet_ms": [5, 10, 20],
-                "bitrate_min": 6000,
-                "bitrate_max": 512000,
-                "pcm_formats": ["f32", "i16"],
-                "constant_bitrate": true
-            })]
+            [
+                Configuration {
+                    channels: 1,
+                    ..Configuration::default()
+                },
+                Configuration {
+                    channels: 2,
+                    ..Configuration::default()
+                },
+                Configuration {
+                    channels: 6,
+                    ..Configuration::default()
+                },
+                Configuration {
+                    channels: 8,
+                    ..Configuration::default()
+                },
+            ]
+            .into_iter()
+            .map(|configuration| {
+                let (bitrate_min, bitrate_max) = configuration.bitrate_range();
+                let layout = configuration.layout().expect("advertised layout exists");
+                json!({
+                    "codec": "opus",
+                    "sample_rate": SAMPLE_RATE,
+                    "channels": [configuration.channels],
+                    "packet_ms": [5, 10, 20],
+                    "bitrate_min": bitrate_min,
+                    "bitrate_max": bitrate_max,
+                    "streams": layout.streams,
+                    "coupled_streams": layout.coupled_streams,
+                    "channel_mapping": layout.mapping,
+                    "pcm_formats": ["f32", "i16"],
+                    "constant_bitrate": true
+                })
+            })
+            .collect()
         } else {
             Vec::new()
         };
@@ -199,12 +226,19 @@ impl Controller {
     }
 
     fn open_reply(&self, id: u64, stream: &Stream) -> Value {
+        let layout = stream
+            .configuration
+            .layout()
+            .expect("open stream has a valid layout");
         json!({
             "ok": true,
             "stream": id,
             "codec": "opus",
             "sample_rate": SAMPLE_RATE,
             "channels": stream.configuration.channels,
+            "streams": layout.streams,
+            "coupled_streams": layout.coupled_streams,
+            "channel_mapping": layout.mapping,
             "packet_ms": stream.configuration.packet_ms,
             "bitrate": stream.configuration.bitrate,
             "lookahead_frames": stream.lookahead(),

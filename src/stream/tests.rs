@@ -736,3 +736,48 @@ fn high_quality_stereo_packets_survive_rejection_recovery_and_drain() {
     );
     assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
 }
+
+#[test]
+fn surround_packets_retain_queue_order_across_recovery_and_end_once() {
+    for (channels, bitrate) in [(6, 1_536_000), (8, 2_048_000)] {
+        let configuration = Configuration {
+            channels,
+            packet_ms: 10,
+            bitrate,
+        };
+        let mut encoder = Stream::new("surround".into(), configuration).unwrap();
+        let samples = vec![0u8; 480 * channels as usize * 2];
+        let mut sink = Sink::new();
+        // SAFETY: input and sink allocations remain live through each call.
+        assert_eq!(
+            unsafe { encoder.submit(&input(&samples, channels, PCM_I16, 1_000, 0)) },
+            STATUS_OK
+        );
+        assert_eq!(encoder.queued(), 1);
+        sink.reject = true;
+        assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_BUSY);
+        encoder.failure = Some("codec_encode_failed");
+        encoder.recover().unwrap();
+        sink.reject = false;
+        assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+        assert_eq!(sink.packets[0], sink.packets[1]);
+        assert_eq!(sink.packets[1].bytes.len(), encoder.packet_bytes());
+        assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+
+        assert_eq!(
+            unsafe { encoder.submit(&input(&samples, channels, PCM_I16, 100_000, 50)) },
+            STATUS_OK
+        );
+        assert_eq!(encoder.drain(), STATUS_OK);
+        while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+        assert_eq!(sink.packets[2].sequence, 1);
+        assert_eq!(sink.packets[2].timestamp, 100_000);
+        assert_eq!(sink.packets[2].flags, AUDIO_PACKET_DISCONTINUITY);
+        assert_eq!(sink.packets[2].bytes.len(), encoder.packet_bytes());
+        assert_eq!(
+            sink.packets.last().unwrap().flags,
+            AUDIO_PACKET_END_OF_STREAM
+        );
+        assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+    }
+}
