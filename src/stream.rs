@@ -110,6 +110,37 @@ impl Stream {
         Ok(())
     }
 
+    pub fn recover(&mut self) -> EncodeResult<()> {
+        self.recover_with(Encoder::new)
+    }
+
+    fn recover_with(
+        &mut self,
+        build_encoder: impl FnOnce(Configuration) -> EncodeResult<Encoder>,
+    ) -> EncodeResult<()> {
+        if self.failure.is_none() {
+            return Err("stream_not_failed");
+        }
+        // Construct a complete replacement before discarding any state. If
+        // codec initialization fails, the failed stream stays inspectable.
+        let encoder = build_encoder(self.configuration)?;
+        self.encoder = encoder;
+        self.discarded_frames += self.buffered_frames() as u64;
+        self.samples.clear();
+        self.packets.clear();
+        self.origin = None;
+        self.accepted_frames = 0;
+        self.encoded_frames = 0;
+        self.input_sequence = None;
+        self.discontinuity_pending = self.output_sequence != 0;
+        self.draining = false;
+        self.eos_delivered = false;
+        self.failure = None;
+        self.last_input_timestamp_us = None;
+        self.input_clock_drift_us = 0;
+        Ok(())
+    }
+
     /// # Safety
     /// The validated frame's sample allocation remains initialized and immutable
     /// for this call. Samples are copied and never retained as caller pointers.

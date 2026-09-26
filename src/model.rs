@@ -62,6 +62,9 @@ pub enum Operation {
         stream: u64,
         bitrate: u32,
     },
+    Recover {
+        stream: u64,
+    },
     Close {
         stream: u64,
     },

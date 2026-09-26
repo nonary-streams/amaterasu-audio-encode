@@ -240,6 +240,74 @@ fn partial_i16_padding_rejected_sink_and_eos_are_retry_safe() {
 }
 
 #[test]
+fn failed_stream_recovery_discards_uncertain_output_and_resumes_on_a_new_epoch() {
+    let mut encoder = stream(1, 10);
+    assert_eq!(encoder.recover(), Err("stream_not_failed"));
+    let full = vec![0u8; 480 * 2];
+    let partial = vec![0u8; 120 * 2];
+    assert_eq!(
+        unsafe { encoder.submit(&input(&full, 1, PCM_I16, 1000, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { encoder.submit(&input(&partial, 1, PCM_I16, 11_000, 1)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.queued(), 1);
+    encoder.failure = Some("codec_encode_failed");
+    let mut sink = Sink::new();
+    assert_eq!(
+        unsafe { encoder.receive(sink.native()) },
+        MEDIA_BACKEND_ERROR
+    );
+
+    assert_eq!(
+        encoder.recover_with(|_| Err("codec_initialization_failed")),
+        Err("codec_initialization_failed")
+    );
+    assert_eq!(encoder.state(), "failed");
+    assert_eq!(encoder.queued(), 1);
+    assert_eq!(encoder.buffered_frames(), 120);
+    assert_eq!(encoder.last_input_timestamp_us, Some(11_000));
+
+    encoder.recover().unwrap();
+    assert_eq!(encoder.state(), "encoding");
+    assert_eq!(encoder.queued(), 0);
+    assert_eq!(encoder.buffered_frames(), 0);
+    assert_eq!(encoder.discarded_frames, 120);
+    assert_eq!(encoder.last_input_timestamp_us, None);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+    assert_eq!(
+        unsafe { encoder.submit(&input(&full, 1, PCM_I16, 200_000, 50)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets.len(), 1);
+    assert_eq!(sink.packets[0].sequence, 1);
+    assert_eq!(sink.packets[0].timestamp, 200_000);
+    assert_eq!(sink.packets[0].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+}
+
+#[test]
+fn draining_stream_cannot_be_recovered_as_a_failure() {
+    let mut encoder = stream(1, 10);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    assert_eq!(encoder.recover(), Err("stream_not_failed"));
+    assert_eq!(encoder.state(), "draining");
+    let mut sink = Sink::new();
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+    assert_eq!(encoder.recover(), Err("stream_not_failed"));
+    assert_eq!(encoder.state(), "ended");
+}
+
+#[test]
 fn queue_backpressure_and_invalid_input_accept_no_samples_or_continuity_changes() {
     let mut encoder = stream(1, 5);
     let bytes = vec![0u8; 240 * 2];

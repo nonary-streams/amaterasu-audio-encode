@@ -60,6 +60,7 @@ impl Controller {
                 )
             }
             Operation::Update { stream, bitrate } => (self.update(owner, stream, bitrate)?, None),
+            Operation::Recover { stream } => (self.recover(owner, stream)?, None),
             Operation::Close { stream } => (self.close(owner, stream)?, None),
             Operation::Status { stream } => (self.status(owner, stream), None),
         };
@@ -171,6 +172,12 @@ impl Controller {
             "bitrate": stream.configuration.bitrate,
             "packet_bytes": stream.packet_bytes()
         }))
+    }
+
+    fn recover(&mut self, owner: &str, id: u64) -> EncodeResult<Value> {
+        let stream = self.owned_mut(owner, id).ok_or("stream_not_found")?;
+        stream.recover()?;
+        Ok(json!({"ok": true, "stream": id, "packet_bytes": stream.packet_bytes()}))
     }
 
     fn enumerate(&self) -> Value {

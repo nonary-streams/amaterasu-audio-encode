@@ -227,6 +227,65 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
 }
 
 #[test]
+fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
+    let mut controller = Controller::new(true);
+    let id = controller
+        .handle("a", open(Some("failed")))
+        .unwrap()
+        .created
+        .unwrap();
+    let action: Operation =
+        serde_json::from_value(json!({"action":"recover","stream":id})).unwrap();
+    assert_eq!(
+        controller.handle("a", action).err(),
+        Some("stream_not_failed")
+    );
+    assert_eq!(
+        controller
+            .handle("b", Operation::Recover { stream: id })
+            .err(),
+        Some("stream_not_found")
+    );
+    controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
+    assert_eq!(
+        controller
+            .handle("b", Operation::Recover { stream: id })
+            .err(),
+        Some("stream_not_found")
+    );
+    assert_eq!(
+        controller
+            .handle("a", Operation::Status { stream: Some(id) })
+            .unwrap()
+            .payload["streams"][0]["state"],
+        "failed"
+    );
+    let reply = controller
+        .handle("a", Operation::Recover { stream: id })
+        .unwrap();
+    assert_eq!(reply.payload["stream"], id);
+    assert_eq!(
+        controller
+            .handle("a", Operation::Status { stream: Some(id) })
+            .unwrap()
+            .payload["streams"][0]["state"],
+        "encoding"
+    );
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Lookup {
+                    operation_id: "failed".into()
+                }
+            )
+            .unwrap()
+            .payload["stream"],
+        id
+    );
+}
+
+#[test]
 fn unpublished_opens_release_operation_capacity_without_erasing_close_tombstones() {
     let mut controller = Controller::new(true);
     for index in 0..1025 {

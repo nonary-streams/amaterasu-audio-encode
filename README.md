@@ -47,6 +47,7 @@ provided by the runtime, not a caller-supplied payload identity.
 | `open` | `channels` (1 or 2, default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` (6000–256000 bps, default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
 | `update` | `stream`, `bitrate` (6000–256000 bps) | `ok`, `stream`, current `bitrate` and `packet_bytes` |
+| `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
 | `close` | `stream` | `{"ok":true}`, or `stream_not_found` |
 | `status` | optional `stream` | `ok`, `enabled`, caller-owned `streams` metadata and health |
 
@@ -72,6 +73,15 @@ bitrate is idempotent. A changed bitrate returns `stream_busy` while any packet
 or partial PCM remains; consumers must reach an empty packet boundary. Drain
 and failure forbid updates. Status and lookup report the current bitrate and
 packet size. Retrying the original open operation does not undo an update.
+
+Recovery requires a failed, caller-owned stream. It constructs a replacement
+codec before changing stream state, then discards queued packets and partial
+PCM whose delivery is uncertain, clears failure and input timing, and accepts
+new input from any sequence and timestamp. Output sequence numbers continue;
+the first new packet has `AUDIO_PACKET_DISCONTINUITY` if any earlier packet was
+encoded. The receiver must reset its decoder. Recovery of a healthy stream
+returns `stream_not_failed`; a codec initialization error leaves the failed
+stream available for inspection or close.
 
 A cancelled request is checked before allocation. If completing a newly opened
 stream fails, that unpublished allocation and its operation record are removed,
