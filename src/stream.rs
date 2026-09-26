@@ -84,6 +84,14 @@ impl Stream {
     }
 
     pub fn update_bitrate(&mut self, bitrate: u32) -> EncodeResult<()> {
+        self.update_bitrate_with(bitrate, Encoder::new)
+    }
+
+    fn update_bitrate_with(
+        &mut self,
+        bitrate: u32,
+        build_encoder: impl FnOnce(Configuration) -> EncodeResult<Encoder>,
+    ) -> EncodeResult<()> {
         let configuration = Configuration {
             bitrate,
             ..self.configuration
@@ -101,12 +109,19 @@ impl Stream {
         if !self.packets.is_empty() || !self.samples.is_empty() {
             return Err("stream_busy");
         }
-        // Build and measure the replacement before changing the live stream. A
-        // decoder must reset for the new Opus epoch and packet byte length.
-        let encoder = Encoder::new(configuration)?;
-        self.encoder = encoder;
+        // Measure a separate encoder before changing the live one. A bitrate
+        // update does not reset Opus history, so the decoder stays continuous.
+        let encoder = build_encoder(configuration)?;
+        if let Err(error) =
+            self.encoder
+                .update_bitrate(self.configuration.bitrate, bitrate, encoder.packet_bytes)
+        {
+            if error == "codec_bitrate_rollback_failed" {
+                self.failure = Some(error);
+            }
+            return Err(error);
+        }
         self.configuration = configuration;
-        self.discontinuity_pending |= self.origin.is_some();
         Ok(())
     }
 

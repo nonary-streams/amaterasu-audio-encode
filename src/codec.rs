@@ -81,8 +81,30 @@ impl Encoder {
     }
 
     fn configure_constant_bitrate(&mut self, bitrate: u32) -> EncodeResult<()> {
-        // SAFETY: both requests take exactly one C int; the owned state is live.
-        let bitrate_result = match self.state {
+        self.set_bitrate(bitrate)?;
+        // SAFETY: SET_VBR takes one C int. Fixed-size packets are required by
+        // GameStream's audio recovery format; libopus performs its own padding.
+        let cbr_result = match self.state {
+            CodecState::Single(pointer) => unsafe {
+                opus::opus_encoder_ctl(pointer.as_ptr(), opus::OPUS_SET_VBR_REQUEST, 0i32)
+            },
+            CodecState::Multistream(pointer) => unsafe {
+                opus::opus_multistream_encoder_ctl(
+                    pointer.as_ptr(),
+                    opus::OPUS_SET_VBR_REQUEST,
+                    0i32,
+                )
+            },
+        };
+        if cbr_result != opus::OPUS_OK {
+            return Err("codec_configuration_failed");
+        }
+        Ok(())
+    }
+
+    fn set_bitrate(&mut self, bitrate: u32) -> EncodeResult<()> {
+        // SAFETY: SET_BITRATE takes exactly one C int and the owned state is live.
+        let result = match self.state {
             CodecState::Single(pointer) => unsafe {
                 opus::opus_encoder_ctl(
                     pointer.as_ptr(),
@@ -98,23 +120,26 @@ impl Encoder {
                 )
             },
         };
-        // SAFETY: SET_VBR takes one C int. Fixed-size packets are required by
-        // GameStream's audio recovery format; libopus performs its own padding.
-        let cbr_result = match self.state {
-            CodecState::Single(pointer) => unsafe {
-                opus::opus_encoder_ctl(pointer.as_ptr(), opus::OPUS_SET_VBR_REQUEST, 0i32)
-            },
-            CodecState::Multistream(pointer) => unsafe {
-                opus::opus_multistream_encoder_ctl(
-                    pointer.as_ptr(),
-                    opus::OPUS_SET_VBR_REQUEST,
-                    0i32,
-                )
-            },
-        };
-        if bitrate_result != opus::OPUS_OK || cbr_result != opus::OPUS_OK {
+        if result != opus::OPUS_OK {
             return Err("codec_configuration_failed");
         }
+        Ok(())
+    }
+
+    pub fn update_bitrate(
+        &mut self,
+        previous_bitrate: u32,
+        bitrate: u32,
+        packet_bytes: usize,
+    ) -> EncodeResult<()> {
+        if self.set_bitrate(bitrate).is_err() {
+            return if self.set_bitrate(previous_bitrate).is_ok() {
+                Err("codec_configuration_failed")
+            } else {
+                Err("codec_bitrate_rollback_failed")
+            };
+        }
+        self.packet_bytes = packet_bytes;
         Ok(())
     }
 
@@ -226,6 +251,42 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_bitrate_updates_match_premeasured_cbr_sizes_without_reset() {
+        for channels in [1, 2, 6, 8] {
+            for packet_ms in [5, 10, 20] {
+                let profile = Configuration {
+                    channels,
+                    packet_ms,
+                    bitrate: if channels > 2 { 1_024_000 } else { 128_000 },
+                };
+                let mut encoder = Encoder::new(profile).unwrap();
+                let mut current_bitrate = profile.bitrate;
+                let frames = profile.packet_frames();
+                let samples = vec![0.25; frames * channels as usize];
+                assert_eq!(
+                    encoder.encode(&samples, frames).unwrap().len(),
+                    encoder.packet_bytes
+                );
+                for bitrate in if channels > 2 {
+                    [768_000, 1_536_000]
+                } else {
+                    [64_000, 256_000]
+                } {
+                    let expected = Encoder::new(Configuration { bitrate, ..profile }).unwrap();
+                    encoder
+                        .update_bitrate(current_bitrate, bitrate, expected.packet_bytes)
+                        .unwrap();
+                    current_bitrate = bitrate;
+                    assert_eq!(
+                        encoder.encode(&samples, frames).unwrap().len(),
+                        expected.packet_bytes
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn constant_bitrate_packets_keep_their_size_across_signal_changes_and_resets() {

@@ -674,10 +674,11 @@ fn capture_clock_jitter_drift_and_estimates_preserve_a_stable_output_sample_cloc
 }
 
 #[test]
-fn bitrate_update_waits_for_packet_boundary_then_marks_new_codec_epoch() {
+fn bitrate_update_waits_for_packet_boundary_and_keeps_decoder_continuous() {
     let mut encoder = stream(1, 10);
     let bytes = vec![0u8; 480 * 2];
     let mut sink = Sink::new();
+    let mut decoder = Decoder::new(1);
     let first_size = encoder.packet_bytes();
     let first = input(&bytes, 1, PCM_I16, 1000, 0);
     // SAFETY: local PCM and sink allocations live through synchronous calls.
@@ -686,6 +687,7 @@ fn bitrate_update_waits_for_packet_boundary_then_marks_new_codec_epoch() {
     assert_eq!(encoder.configuration.bitrate, 128_000);
     assert_eq!(encoder.packet_bytes(), first_size);
     assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(decoder.decode(&sink.packets[0], 1).len(), 480);
 
     let partial = input(&bytes[..240 * 2], 1, PCM_I16, 11_000, 1);
     assert_eq!(unsafe { encoder.submit(&partial) }, STATUS_OK);
@@ -693,6 +695,7 @@ fn bitrate_update_waits_for_packet_boundary_then_marks_new_codec_epoch() {
     let continuation = input(&bytes[..240 * 2], 1, PCM_I16, 16_000, 2);
     assert_eq!(unsafe { encoder.submit(&continuation) }, STATUS_OK);
     assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(decoder.decode(&sink.packets[1], 1).len(), 480);
 
     assert_eq!(encoder.update_bitrate(5999), Err("unsupported_bitrate"));
     assert_eq!(encoder.update_bitrate(64_000), Ok(()));
@@ -705,10 +708,10 @@ fn bitrate_update_waits_for_packet_boundary_then_marks_new_codec_epoch() {
     );
     assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
     assert_eq!(sink.packets[2].bytes.len(), updated_size);
-    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(sink.packets[2].flags, 0);
     assert_eq!(sink.packets[2].timestamp, 21_000);
     assert_eq!(sink.packets[2].sequence, 2);
-    assert_eq!(Decoder::new(1).decode(&sink.packets[2], 1).len(), 480);
+    assert_eq!(decoder.decode(&sink.packets[2], 1).len(), 480);
     assert_eq!(encoder.drain(), STATUS_OK);
     assert_eq!(encoder.update_bitrate(96_000), Err("stream_closed"));
     while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
@@ -733,6 +736,57 @@ fn update_before_first_input_does_not_report_a_false_discontinuity() {
     assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
     assert_eq!(sink.packets[0].flags, 0);
     assert_eq!(sink.packets[0].bytes.len(), encoder.packet_bytes());
+}
+
+#[test]
+fn failed_bitrate_premeasure_keeps_live_epoch_until_update_and_recovery_complete() {
+    let mut encoder = stream(1, 10);
+    let bytes = vec![0u8; 480 * 2];
+    let original_size = encoder.packet_bytes();
+    let mut sink = Sink::new();
+
+    // SAFETY: the local PCM and sink allocations live through synchronous calls.
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, 1_000, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(
+        encoder.update_bitrate_with(64_000, |_| Err("codec_initialization_failed")),
+        Err("codec_initialization_failed")
+    );
+    assert_eq!(encoder.configuration.bitrate, 128_000);
+    assert_eq!(encoder.packet_bytes(), original_size);
+    assert_eq!(encoder.state(), "encoding");
+
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, 11_000, 1)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[1].bytes.len(), original_size);
+    assert_eq!(sink.packets[1].flags, 0);
+
+    encoder.update_bitrate(64_000).unwrap();
+    let updated_size = encoder.packet_bytes();
+    assert_ne!(updated_size, original_size);
+    encoder.failure = Some("codec_encode_failed");
+    assert_eq!(encoder.drain(), MEDIA_BACKEND_ERROR);
+    encoder.recover().unwrap();
+    assert_eq!(encoder.configuration.bitrate, 64_000);
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, 21_000, 2)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(sink.packets[2].bytes.len(), updated_size);
+    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
 }
 
 #[test]
