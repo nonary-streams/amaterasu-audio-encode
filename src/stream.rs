@@ -106,7 +106,7 @@ impl Stream {
         let encoder = Encoder::new(configuration)?;
         self.encoder = encoder;
         self.configuration = configuration;
-        self.discontinuity_pending = self.origin.is_some();
+        self.discontinuity_pending |= self.origin.is_some();
         Ok(())
     }
 
@@ -277,12 +277,19 @@ impl Stream {
         if self.packets.len() + needed + 1 > MAX_PACKETS {
             return MEDIA_BUSY;
         }
-        self.padded_frames = (needed * frames - pending) as u64;
+        let padding = (needed * frames - pending) as u64;
         self.samples
             .resize(needed * frames * self.configuration.channels as usize, 0.0);
         if let Err(error) = self.encode_available() {
+            // A failed flush may leave synthetic silence after the real input.
+            // Recovery must count only accepted, unencoded capture frames as
+            // discarded and must never replay padding from the failed epoch.
+            let remaining_input = self.accepted_frames.saturating_sub(self.encoded_frames);
+            self.samples
+                .truncate(remaining_input as usize * self.configuration.channels as usize);
             return self.fail(error);
         }
+        self.padded_frames = padding;
         self.packets.push_back(Packet {
             bytes: Vec::new(),
             frames: 0,

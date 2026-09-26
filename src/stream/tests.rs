@@ -404,6 +404,55 @@ fn recovery_removes_failed_drain_end_marker_but_keeps_earlier_audio() {
 }
 
 #[test]
+fn failed_drain_recovery_update_and_eos_preserve_input_accounting_and_decoder_reset() {
+    let mut encoder = stream(1, 10);
+    assert_eq!(encoder.update_bitrate(64_000), Ok(()));
+    let full = vec![0u8; 480 * 2];
+    let partial = vec![0u8; 120 * 2];
+    assert_eq!(
+        unsafe { encoder.submit(&input(&full, 1, PCM_I16, 1_000, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(
+        unsafe { encoder.submit(&input(&partial, 1, PCM_I16, 11_000, 1)) },
+        STATUS_OK
+    );
+    // Force the codec's packet-size check to fail on flush. The first packet
+    // remains valid while the added silence must not become discarded input.
+    encoder.encoder.packet_bytes += 1;
+    assert_eq!(encoder.drain(), MEDIA_BACKEND_ERROR);
+    assert_eq!(encoder.state(), "failed");
+    assert_eq!(encoder.buffered_frames(), 120);
+    assert_eq!(encoder.padded_frames, 0);
+    assert_eq!(encoder.queued(), 1);
+
+    encoder.recover().unwrap();
+    assert_eq!(encoder.discarded_frames, 120);
+    assert_eq!(encoder.buffered_frames(), 0);
+    assert_eq!(encoder.update_bitrate(96_000), Err("stream_busy"));
+    let mut sink = Sink::new();
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0].timestamp, 1_000);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+    assert_eq!(encoder.update_bitrate(96_000), Ok(()));
+    assert_eq!(encoder.configuration.bitrate, 96_000);
+    assert_eq!(
+        unsafe { encoder.submit(&input(&full, 1, PCM_I16, 100_000, 20)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[1].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(sink.packets[1].sequence, 1);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}
+
+#[test]
 fn queue_backpressure_and_invalid_input_accept_no_samples_or_continuity_changes() {
     let mut encoder = stream(1, 5);
     let bytes = vec![0u8; 240 * 2];

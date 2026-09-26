@@ -78,13 +78,16 @@ Recovery requires a failed, caller-owned stream. Packets encoded before the
 failure remain available through `receive`, including retry after a sink
 rejection; an empty failed queue reports `MEDIA_BACKEND_ERROR` rather than EOS.
 Recovery constructs a replacement codec before changing stream state, then
-discards any still-queued packets and partial PCM. It clears failure and input
-timing and accepts new input from any sequence and timestamp. Output sequence
-numbers continue;
+retains already encoded audio packets, removes any failed-drain EOS marker, and
+discards partial PCM. Synthetic silence from a failed drain is removed before
+recovery and is not counted as discarded capture input. Recovery clears failure
+and input timing and accepts new input from any sequence and timestamp. Output
+sequence numbers continue;
 the first new packet has `AUDIO_PACKET_DISCONTINUITY` if any earlier packet was
 encoded. The receiver must reset its decoder. Recovery of a healthy stream
 returns `stream_not_failed`; a codec initialization error leaves the failed
 stream available for inspection or close.
+An update after recovery preserves the pending decoder reset marker.
 
 A cancelled request is checked before allocation. If completing a newly opened
 stream fails, that unpublished allocation and its operation record are removed,
