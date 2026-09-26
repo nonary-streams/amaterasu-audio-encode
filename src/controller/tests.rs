@@ -167,6 +167,25 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
         .unwrap()
         .created
         .unwrap();
+    assert_eq!(
+        controller
+            .handle("a", Operation::Enumerate)
+            .unwrap()
+            .payload["encoders"][0]["bitrate_max"],
+        512_000
+    );
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Update {
+                    stream: id,
+                    bitrate: 512_001,
+                },
+            )
+            .err(),
+        Some("unsupported_bitrate")
+    );
     let update = Operation::Update {
         stream: id,
         bitrate: 64_000,
@@ -192,18 +211,18 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
             "a",
             Operation::Update {
                 stream: id,
-                bitrate: 64_000,
+                bitrate: 512_000,
             },
         )
         .unwrap();
-    assert_eq!(reply.payload["bitrate"], 64_000);
+    assert_eq!(reply.payload["bitrate"], 512_000);
     assert!(reply.payload["packet_bytes"].as_u64().unwrap() > 0);
     assert_eq!(
         controller
             .handle("a", Operation::Status { stream: Some(id) })
             .unwrap()
             .payload["streams"][0]["bitrate"],
-        64_000
+        512_000
     );
     assert_eq!(
         controller
@@ -215,7 +234,7 @@ fn bitrate_update_is_owned_validated_and_reflected_in_status_and_lookup() {
             )
             .unwrap()
             .payload["bitrate"],
-        64_000
+        512_000
     );
     assert_eq!(controller.close("a", id).unwrap()["ok"], true);
     assert_eq!(

@@ -685,3 +685,54 @@ fn update_before_first_input_does_not_report_a_false_discontinuity() {
     assert_eq!(sink.packets[0].flags, 0);
     assert_eq!(sink.packets[0].bytes.len(), encoder.packet_bytes());
 }
+
+#[test]
+fn high_quality_stereo_packets_survive_rejection_recovery_and_drain() {
+    let mut encoder = Stream::new(
+        "test".into(),
+        Configuration {
+            channels: 2,
+            packet_ms: 20,
+            bitrate: 512_000,
+        },
+    )
+    .unwrap();
+    assert!(encoder.packet_bytes() > 0);
+    let bytes = vec![0u8; 960 * 2 * 2];
+    let mut sink = Sink::new();
+    // SAFETY: PCM and sink allocations remain live through each synchronous call.
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 2, PCM_I16, 10_000, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.queued(), 1);
+    sink.reject = true;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_BUSY);
+    assert_eq!(encoder.queued(), 1);
+    encoder.failure = Some("codec_encode_failed");
+    assert_eq!(encoder.drain(), MEDIA_BACKEND_ERROR);
+    encoder.recover().unwrap();
+    assert_eq!(encoder.queued(), 1);
+    sink.reject = false;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0], sink.packets[1]);
+    assert_eq!(sink.packets[1].bytes.len(), encoder.packet_bytes());
+    assert_eq!(sink.packets[1].flags, 0);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 2, PCM_I16, 100_000, 40)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(sink.packets[2].sequence, 1);
+    assert_eq!(sink.packets[2].timestamp, 100_000);
+    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(sink.packets[2].bytes.len(), encoder.packet_bytes());
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}

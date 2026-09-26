@@ -30,7 +30,7 @@ impl Configuration {
         if !matches!(self.packet_ms, 5 | 10 | 20) {
             return Err("unsupported_packet_duration");
         }
-        if !(6000..=256_000).contains(&self.bitrate) {
+        if !(6000..=512_000).contains(&self.bitrate) {
             return Err("unsupported_bitrate");
         }
         Ok(self)

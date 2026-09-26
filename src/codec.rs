@@ -142,7 +142,7 @@ mod tests {
     fn constant_bitrate_packets_keep_their_size_across_signal_changes_and_resets() {
         for channels in [1, 2] {
             for packet_ms in [5, 10, 20] {
-                for bitrate in [6000, 6100, 128_000, 256_000] {
+                for bitrate in [6000, 6100, 128_000, 256_000, 512_000] {
                     let configuration = Configuration {
                         channels,
                         packet_ms,

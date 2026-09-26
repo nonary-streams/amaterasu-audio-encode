@@ -188,7 +188,7 @@ impl Controller {
                 "channels": [1, 2],
                 "packet_ms": [5, 10, 20],
                 "bitrate_min": 6000,
-                "bitrate_max": 256000,
+                "bitrate_max": 512000,
                 "pcm_formats": ["f32", "i16"],
                 "constant_bitrate": true
             })]

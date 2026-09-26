@@ -44,9 +44,9 @@ provided by the runtime, not a caller-supplied payload identity.
 | Action | Fields | Result |
 | --- | --- | --- |
 | `enumerate` | none | `ok`, `enabled`, `encoders`; empty when disabled |
-| `open` | `channels` (1 or 2, default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` (6000–256000 bps, default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
+| `open` | `channels` (1 or 2, default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` (6000–512000 bps, default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
-| `update` | `stream`, `bitrate` (6000–256000 bps) | `ok`, `stream`, current `bitrate` and `packet_bytes` |
+| `update` | `stream`, `bitrate` (6000–512000 bps) | `ok`, `stream`, current `bitrate` and `packet_bytes` |
 | `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
 | `close` | `stream` | `{"ok":true}`, or `stream_not_found` |
 | `status` | optional `stream` | `ok`, `enabled`, caller-owned `streams` metadata and health |
