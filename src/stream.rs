@@ -294,7 +294,15 @@ impl Stream {
     /// The sink callback/context remain live through synchronous delivery and
     /// cannot retain the borrowed packet allocation or unwind across the ABI.
     pub unsafe fn receive(&mut self, sink: AudioPacketSink) -> Status {
-        if self.failure.is_some() {
+        // A codec failure cannot invalidate packets already encoded. Deliver
+        // them in order before reporting the failure once the queue is empty.
+        // A failed drain must never turn an already queued EOS into success.
+        if self.failure.is_some()
+            && self
+                .packets
+                .front()
+                .is_none_or(|packet| packet.flags & AUDIO_PACKET_END_OF_STREAM != 0)
+        {
             return MEDIA_BACKEND_ERROR;
         }
         let Some(packet) = self.packets.front() else {

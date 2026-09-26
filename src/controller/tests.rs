@@ -283,6 +283,8 @@ fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
             .payload["stream"],
         id
     );
+    assert_eq!(controller.close("a", id).unwrap()["ok"], true);
+    assert_eq!(controller.streams.len(), 0);
 }
 
 #[test]

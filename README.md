@@ -74,10 +74,13 @@ or partial PCM remains; consumers must reach an empty packet boundary. Drain
 and failure forbid updates. Status and lookup report the current bitrate and
 packet size. Retrying the original open operation does not undo an update.
 
-Recovery requires a failed, caller-owned stream. It constructs a replacement
-codec before changing stream state, then discards queued packets and partial
-PCM whose delivery is uncertain, clears failure and input timing, and accepts
-new input from any sequence and timestamp. Output sequence numbers continue;
+Recovery requires a failed, caller-owned stream. Packets encoded before the
+failure remain available through `receive`, including retry after a sink
+rejection; an empty failed queue reports `MEDIA_BACKEND_ERROR` rather than EOS.
+Recovery constructs a replacement codec before changing stream state, then
+discards any still-queued packets and partial PCM. It clears failure and input
+timing and accepts new input from any sequence and timestamp. Output sequence
+numbers continue;
 the first new packet has `AUDIO_PACKET_DISCONTINUITY` if any earlier packet was
 encoded. The receiver must reset its decoder. Recovery of a healthy stream
 returns `stream_not_failed`; a codec initialization error leaves the failed
@@ -149,7 +152,9 @@ and repeated drain calls are harmless. EOS is delivered once after acceptance;
 subsequent receive and submit return `MEDIA_CLOSED`.
 
 Receive invokes at most one callback. A rejected packet, including EOS, remains
-unchanged for retry. The sink may borrow bytes only during its callback; submit
+unchanged for retry. A failed stream still delivers its previously encoded
+packets in order; after they are consumed it reports `MEDIA_BACKEND_ERROR`.
+The sink may borrow bytes only during its callback; submit
 copies input before returning. Native callers must provide valid pointers and
 must not unwind across C callbacks. Factory/binding allocation, libopus state,
 and callback boundaries carry explicit Rust safety comments. Module shutdown
