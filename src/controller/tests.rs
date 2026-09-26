@@ -1,7 +1,7 @@
 use super::*;
 use amaterasu_media::{
     AUDIO_PACKET_DISCONTINUITY, AUDIO_PACKET_END_OF_STREAM, EncodedAudioPacket,
-    MEDIA_BACKEND_ERROR, MEDIA_CLOSED, MEDIA_PENDING, PCM_I16,
+    MEDIA_BACKEND_ERROR, MEDIA_BUSY, MEDIA_CLOSED, MEDIA_PENDING, PCM_I16,
 };
 use amaterasu_module_sdk::abi::STATUS_OK;
 use std::ffi::c_void;
@@ -535,6 +535,107 @@ fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
         MEDIA_CLOSED
     );
     controller.close("owner", id).unwrap();
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_CLOSED
+    );
+}
+
+#[test]
+fn abandoned_eos_allows_bitrate_recovery_and_retried_delivery_before_release() {
+    struct Receiver {
+        packets: Vec<(u64, u32, usize)>,
+        reject_next: bool,
+    }
+    unsafe extern "C" fn receive_packet(
+        context: *mut c_void,
+        packet: *const EncodedAudioPacket,
+    ) -> Status {
+        // SAFETY: the receiver and borrowed packet live through this call.
+        let receiver = unsafe { &mut *context.cast::<Receiver>() };
+        let packet = unsafe { &*packet };
+        receiver
+            .packets
+            .push((packet.sequence, packet.flags, packet.len));
+        if std::mem::take(&mut receiver.reject_next) {
+            MEDIA_BUSY
+        } else {
+            STATUS_OK
+        }
+    }
+
+    let mut controller = Controller::new(true);
+    let id = controller
+        .handle("owner", open(Some("abandoned-eos")))
+        .unwrap()
+        .created
+        .unwrap();
+    let original_bytes = controller.streams[&id].packet_bytes();
+    assert_eq!(controller.drain("owner", id), STATUS_OK);
+    assert_eq!(controller.streams[&id].queued(), 1);
+    controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
+    let mut receiver = Receiver {
+        packets: Vec::new(),
+        reject_next: true,
+    };
+    let sink = AudioPacketSink {
+        context: (&mut receiver as *mut Receiver).cast(),
+        write: receive_packet,
+    };
+    // SAFETY: receiver allocation lives through every synchronous callback.
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_BACKEND_ERROR
+    );
+    assert!(receiver.packets.is_empty());
+    let recovered = controller
+        .handle(
+            "owner",
+            Operation::Recover {
+                stream: id,
+                bitrate: Some(64_000),
+            },
+        )
+        .unwrap();
+    assert_eq!(recovered.payload["stream"], id);
+    assert_eq!(recovered.payload["bitrate"], 64_000);
+    assert_ne!(controller.streams[&id].packet_bytes(), original_bytes);
+    assert_eq!(controller.streams[&id].queued(), 0);
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_PENDING
+    );
+
+    let samples = vec![0u8; 480 * 2 * 2];
+    let frame = AudioFrame {
+        sample_rate: SAMPLE_RATE,
+        channels: 2,
+        format: PCM_I16,
+        frames: 480,
+        flags: 0,
+        data: samples.as_ptr(),
+        len: samples.len(),
+        timestamp_us: 25_000,
+        sequence: 9,
+    };
+    assert_eq!(unsafe { controller.submit("owner", id, &frame) }, STATUS_OK);
+    assert_eq!(unsafe { controller.receive("owner", id, sink) }, MEDIA_BUSY);
+    assert_eq!(controller.streams[&id].queued(), 1);
+    assert_eq!(unsafe { controller.receive("owner", id, sink) }, STATUS_OK);
+    assert_eq!(receiver.packets[0], receiver.packets[1]);
+    assert_eq!(receiver.packets[1].0, 0);
+    assert_eq!(receiver.packets[1].1, 0);
+    assert_eq!(
+        receiver.packets[1].2,
+        controller.streams[&id].packet_bytes()
+    );
+    assert_eq!(controller.drain("owner", id), STATUS_OK);
+    while unsafe { controller.receive("owner", id, sink) } == STATUS_OK {}
+    assert_eq!(
+        receiver.packets.last().unwrap().1,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+    assert_eq!(controller.close("owner", id).unwrap()["ok"], true);
     assert_eq!(
         unsafe { controller.receive("owner", id, sink) },
         MEDIA_CLOSED

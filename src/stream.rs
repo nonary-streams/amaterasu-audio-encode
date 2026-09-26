@@ -154,7 +154,15 @@ impl Stream {
             ..self.configuration
         }
         .validate()?;
-        if configuration != self.configuration && !self.packets.is_empty() {
+        // A failed drain's EOS marker belongs to the abandoned codec epoch.
+        // It is removed below, so only encoded audio can block a bitrate
+        // change while the caller still has packets to receive.
+        if configuration != self.configuration
+            && self
+                .packets
+                .iter()
+                .any(|packet| packet.flags & AUDIO_PACKET_END_OF_STREAM == 0)
+        {
             return Err("stream_busy");
         }
         // Construct a complete replacement before discarding any state. If
