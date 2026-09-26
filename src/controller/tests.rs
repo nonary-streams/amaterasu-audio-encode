@@ -1,4 +1,10 @@
 use super::*;
+use amaterasu_media::{
+    AUDIO_PACKET_DISCONTINUITY, AUDIO_PACKET_END_OF_STREAM, EncodedAudioPacket,
+    MEDIA_BACKEND_ERROR, MEDIA_CLOSED, MEDIA_PENDING, PCM_I16,
+};
+use amaterasu_module_sdk::abi::STATUS_OK;
+use std::ffi::c_void;
 
 fn open(id: Option<&str>) -> Operation {
     Operation::Open {
@@ -285,6 +291,109 @@ fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
     );
     assert_eq!(controller.close("a", id).unwrap()["ok"], true);
     assert_eq!(controller.streams.len(), 0);
+}
+
+#[test]
+fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
+    unsafe extern "C" fn collect(
+        context: *mut c_void,
+        packet: *const EncodedAudioPacket,
+    ) -> Status {
+        // SAFETY: this test keeps both the vector and packet live through the callback.
+        let delivered = unsafe { &mut *context.cast::<Vec<(u64, u32, usize)>>() };
+        let packet = unsafe { &*packet };
+        delivered.push((packet.sequence, packet.flags, packet.len));
+        STATUS_OK
+    }
+
+    let mut controller = Controller::new(true);
+    let id = controller
+        .handle("owner", open(Some("recovery")))
+        .unwrap()
+        .created
+        .unwrap();
+    controller
+        .handle(
+            "owner",
+            Operation::Update {
+                stream: id,
+                bitrate: 64_000,
+            },
+        )
+        .unwrap();
+    let samples = vec![0u8; 480 * 2 * 2];
+    let frame = AudioFrame {
+        sample_rate: SAMPLE_RATE,
+        channels: 2,
+        format: PCM_I16,
+        frames: 480,
+        flags: 0,
+        data: samples.as_ptr(),
+        len: samples.len(),
+        timestamp_us: 1000,
+        sequence: 0,
+    };
+    // SAFETY: PCM and sink allocations remain live during the synchronous calls.
+    assert_eq!(unsafe { controller.submit("owner", id, &frame) }, STATUS_OK);
+    controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
+    assert_eq!(controller.drain("owner", id), MEDIA_BACKEND_ERROR);
+    controller
+        .handle("owner", Operation::Recover { stream: id })
+        .unwrap();
+    assert_eq!(
+        controller
+            .handle(
+                "owner",
+                Operation::Lookup {
+                    operation_id: "recovery".into()
+                }
+            )
+            .unwrap()
+            .payload["stream"],
+        id
+    );
+    let mut delivered: Vec<(u64, u32, usize)> = Vec::new();
+    let sink = AudioPacketSink {
+        context: (&mut delivered as *mut Vec<(u64, u32, usize)>).cast(),
+        write: collect,
+    };
+    assert_eq!(unsafe { controller.receive("owner", id, sink) }, STATUS_OK);
+    assert_eq!(delivered[0].0, 0);
+    assert_eq!(delivered[0].1, 0);
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_PENDING
+    );
+    assert_eq!(
+        unsafe {
+            controller.submit(
+                "owner",
+                id,
+                &AudioFrame {
+                    timestamp_us: 100_000,
+                    sequence: 20,
+                    ..frame
+                },
+            )
+        },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { controller.receive("owner", id, sink) }, STATUS_OK);
+    assert_eq!(delivered[1].0, 1);
+    assert_eq!(delivered[1].1, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(delivered[1].2, delivered[0].2);
+    assert_eq!(controller.drain("owner", id), STATUS_OK);
+    while unsafe { controller.receive("owner", id, sink) } == STATUS_OK {}
+    assert_eq!(delivered.last().unwrap().1, AUDIO_PACKET_END_OF_STREAM);
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_CLOSED
+    );
+    controller.close("owner", id).unwrap();
+    assert_eq!(
+        unsafe { controller.receive("owner", id, sink) },
+        MEDIA_CLOSED
+    );
 }
 
 #[test]

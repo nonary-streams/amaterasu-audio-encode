@@ -127,7 +127,11 @@ impl Stream {
         self.encoder = encoder;
         self.discarded_frames += self.buffered_frames() as u64;
         self.samples.clear();
-        self.packets.clear();
+        // Packets already produced by the old encoder are valid even if the
+        // caller recovers before receiving them. Only an EOS marker from a
+        // failed drain belongs to the abandoned epoch.
+        self.packets
+            .retain(|packet| packet.flags & AUDIO_PACKET_END_OF_STREAM == 0);
         self.origin = None;
         self.accepted_frames = 0;
         self.encoded_frames = 0;

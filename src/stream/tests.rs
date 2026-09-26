@@ -271,21 +271,23 @@ fn failed_stream_recovery_discards_uncertain_output_and_resumes_on_a_new_epoch()
 
     encoder.recover().unwrap();
     assert_eq!(encoder.state(), "encoding");
-    assert_eq!(encoder.queued(), 0);
+    assert_eq!(encoder.queued(), 1);
     assert_eq!(encoder.buffered_frames(), 0);
     assert_eq!(encoder.discarded_frames, 120);
     assert_eq!(encoder.last_input_timestamp_us, None);
-    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_BUSY);
     sink.reject = false;
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
     assert_eq!(
         unsafe { encoder.submit(&input(&full, 1, PCM_I16, 200_000, 50)) },
         STATUS_OK
     );
     assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
-    assert_eq!(sink.packets.len(), 2);
-    assert_eq!(sink.packets[1].sequence, 1);
-    assert_eq!(sink.packets[1].timestamp, 200_000);
-    assert_eq!(sink.packets[1].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(sink.packets.len(), 4);
+    assert_eq!(sink.packets[3].sequence, 1);
+    assert_eq!(sink.packets[3].timestamp, 200_000);
+    assert_eq!(sink.packets[3].flags, AUDIO_PACKET_DISCONTINUITY);
     assert_eq!(encoder.drain(), STATUS_OK);
     while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
     assert_eq!(
@@ -365,6 +367,40 @@ fn failure_never_delivers_a_queued_end_of_stream_marker() {
     );
     assert!(sink.packets.is_empty());
     assert_eq!(encoder.queued(), 1);
+}
+
+#[test]
+fn recovery_removes_failed_drain_end_marker_but_keeps_earlier_audio() {
+    let mut encoder = stream(1, 10);
+    let bytes = vec![0u8; 480 * 2];
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, 0, 0)) },
+        STATUS_OK
+    );
+    assert_eq!(encoder.drain(), STATUS_OK);
+    assert_eq!(encoder.queued(), 3);
+    encoder.failure = Some("codec_encode_failed");
+    encoder.recover().unwrap();
+    assert_eq!(encoder.queued(), 2);
+    let mut sink = Sink::new();
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0].sequence, 0);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[1].sequence, 1);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_PENDING);
+    assert_eq!(
+        unsafe { encoder.submit(&input(&bytes, 1, PCM_I16, 100_000, 10)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[2].sequence, 2);
+    assert_eq!(sink.packets[2].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
 }
 
 #[test]
