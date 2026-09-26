@@ -132,8 +132,18 @@ impl Encoder {
         bitrate: u32,
         packet_bytes: usize,
     ) -> EncodeResult<()> {
-        if self.set_bitrate(bitrate).is_err() {
-            return if self.set_bitrate(previous_bitrate).is_ok() {
+        self.update_bitrate_with(previous_bitrate, bitrate, packet_bytes, Self::set_bitrate)
+    }
+
+    fn update_bitrate_with(
+        &mut self,
+        previous_bitrate: u32,
+        bitrate: u32,
+        packet_bytes: usize,
+        mut set_bitrate: impl FnMut(&mut Self, u32) -> EncodeResult<()>,
+    ) -> EncodeResult<()> {
+        if set_bitrate(self, bitrate).is_err() {
+            return if set_bitrate(self, previous_bitrate).is_ok() {
                 Err("codec_configuration_failed")
             } else {
                 Err("codec_bitrate_rollback_failed")
@@ -251,6 +261,58 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_bitrate_change_rolls_back_without_changing_packet_metadata() {
+        let profile = Configuration::default();
+        let mut encoder = Encoder::new(profile).unwrap();
+        let original_size = encoder.packet_bytes;
+        let mut requests = Vec::new();
+        let result = encoder.update_bitrate_with(
+            profile.bitrate,
+            64_000,
+            original_size / 2,
+            |encoder, bitrate| {
+                requests.push(bitrate);
+                if bitrate == 64_000 {
+                    Err("codec_configuration_failed")
+                } else {
+                    encoder.set_bitrate(bitrate)
+                }
+            },
+        );
+        assert_eq!(result, Err("codec_configuration_failed"));
+        assert_eq!(requests, [64_000, profile.bitrate]);
+        assert_eq!(encoder.packet_bytes, original_size);
+        let samples = vec![0.0; profile.packet_frames() * profile.channels as usize];
+        assert_eq!(
+            encoder
+                .encode(&samples, profile.packet_frames())
+                .unwrap()
+                .len(),
+            original_size
+        );
+    }
+
+    #[test]
+    fn failed_bitrate_rollback_is_reported_without_committing_packet_metadata() {
+        let profile = Configuration::default();
+        let mut encoder = Encoder::new(profile).unwrap();
+        let original_size = encoder.packet_bytes;
+        let mut requests = Vec::new();
+        let result = encoder.update_bitrate_with(
+            profile.bitrate,
+            64_000,
+            original_size / 2,
+            |_, bitrate| {
+                requests.push(bitrate);
+                Err("codec_configuration_failed")
+            },
+        );
+        assert_eq!(result, Err("codec_bitrate_rollback_failed"));
+        assert_eq!(requests, [64_000, profile.bitrate]);
+        assert_eq!(encoder.packet_bytes, original_size);
+    }
 
     #[test]
     fn live_bitrate_updates_match_premeasured_cbr_sizes_without_reset() {
