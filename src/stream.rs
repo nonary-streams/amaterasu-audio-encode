@@ -273,10 +273,17 @@ impl Stream {
     }
 
     fn encode_available(&mut self) -> EncodeResult<()> {
+        self.encode_available_with(Encoder::encode)
+    }
+
+    fn encode_available_with(
+        &mut self,
+        mut encode: impl FnMut(&mut Encoder, &[f32], usize) -> EncodeResult<Vec<u8>>,
+    ) -> EncodeResult<()> {
         let frames = self.configuration.packet_frames();
         let samples = frames * self.configuration.channels as usize;
         while self.samples.len() >= samples {
-            let bytes = self.encoder.encode(&self.samples[..samples], frames)?;
+            let bytes = encode(&mut self.encoder, &self.samples[..samples], frames)?;
             self.samples.drain(..samples);
             self.packets.push_back(Packet {
                 bytes,
@@ -298,6 +305,13 @@ impl Stream {
     }
 
     pub fn drain(&mut self) -> Status {
+        self.drain_with(Encoder::encode)
+    }
+
+    fn drain_with(
+        &mut self,
+        encode: impl FnMut(&mut Encoder, &[f32], usize) -> EncodeResult<Vec<u8>>,
+    ) -> Status {
         if self.failure.is_some() {
             return MEDIA_BACKEND_ERROR;
         }
@@ -317,16 +331,19 @@ impl Stream {
         let padding = (needed * frames - pending) as u64;
         self.samples
             .resize(needed * frames * self.configuration.channels as usize, 0.0);
-        if let Err(error) = self.encode_available() {
+        if let Err(error) = self.encode_available_with(encode) {
             // A failed flush may leave synthetic silence after the real input.
             // Recovery must count only accepted, unencoded capture frames as
             // discarded and must never replay padding from the failed epoch.
+            // Successfully encoded packets remain deliverable, so account for
+            // any padding they already contain even though the drain failed.
+            self.padded_frames += self.encoded_frames.saturating_sub(self.accepted_frames);
             let remaining_input = self.accepted_frames.saturating_sub(self.encoded_frames);
             self.samples
                 .truncate(remaining_input as usize * self.configuration.channels as usize);
             return self.fail(error);
         }
-        self.padded_frames = padding;
+        self.padded_frames += padding;
         self.packets.push_back(Packet {
             bytes: Vec::new(),
             frames: 0,

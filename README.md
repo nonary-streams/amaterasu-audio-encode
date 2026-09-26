@@ -167,17 +167,18 @@ discards only the old partial PCM (visible in `discarded_frames`), and rebases
 the clock to the new timestamp. Already encoded output remains queued. The
 first newly encoded packet carries `AUDIO_PACKET_DISCONTINUITY`; consumers must
 reset their decoder at that packet. Output sequences increase across resets.
-An accepted bitrate update likewise starts a new codec epoch and marks its
-first packet as a discontinuity. The old codec delay is not flushed at this
-boundary; a receiver resets its decoder and accounts for the new lookahead.
+An accepted bitrate update changes the live Opus encoder without resetting its
+history. Subsequent packets remain decoder-continuous and carry no discontinuity
+marker. An update after recovery preserves the recovery reset marker.
 The stream owner must handle long-term audio/video clock synchronization,
 including resampling when needed; this encoder does not correct capture drift.
 
 Packet timestamps follow the input epoch and encoded sample clock. Decoders
 have `lookahead_frames` of codec delay, reported at open/status, and consumers
 must account for it when aligning decoded audio. Drain appends enough zeros to
-flush that delay and fill the final fixed packet; `padded_frames` reports the
-added silence. This may produce a tail packet even when there is no partial
+flush that delay and fill the final fixed packet; `padded_frames` accumulates the
+silence in successfully encoded flush packets, including packets retained after
+a later flush failure. This may produce a tail packet even when there is no partial
 input. An entirely empty stream drains directly to EOS. EOS has zero frames and
 bytes; it follows all encoded packets. Drain can return BUSY until queue space
 is available; it changes no state in that case. Successful drain stops input,

@@ -502,6 +502,64 @@ fn failed_drain_recovery_update_and_eos_preserve_input_accounting_and_decoder_re
 }
 
 #[test]
+fn failed_second_flush_keeps_queued_audio_and_counts_emitted_padding() {
+    let mut encoder = stream(1, 10);
+    let partial = vec![0u8; 400 * 2];
+    let full = vec![0u8; 480 * 2];
+    let mut sink = Sink::new();
+    assert_eq!(
+        unsafe { encoder.submit(&input(&partial, 1, PCM_I16, 1_000, 0)) },
+        STATUS_OK
+    );
+
+    let mut attempts = 0;
+    assert_eq!(
+        encoder.drain_with(|codec, samples, frames| {
+            attempts += 1;
+            if attempts == 2 {
+                Err("codec_encode_failed")
+            } else {
+                codec.encode(samples, frames)
+            }
+        }),
+        MEDIA_BACKEND_ERROR
+    );
+    assert_eq!(attempts, 2);
+    assert_eq!(encoder.state(), "failed");
+    assert_eq!(encoder.queued(), 1);
+    assert_eq!(encoder.buffered_frames(), 0);
+    assert_eq!(encoder.padded_frames, 80);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0].sequence, 0);
+    assert_eq!(sink.packets[0].frames, 480);
+    assert_eq!(sink.packets[0].flags, 0);
+    assert_eq!(
+        unsafe { encoder.receive(sink.native()) },
+        MEDIA_BACKEND_ERROR
+    );
+
+    encoder.recover().unwrap();
+    assert_eq!(encoder.discarded_frames, 0);
+    assert_eq!(encoder.padded_frames, 80);
+    assert_eq!(
+        unsafe { encoder.submit(&input(&full, 1, PCM_I16, 100_000, 20)) },
+        STATUS_OK
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[1].sequence, 1);
+    assert_eq!(sink.packets[1].timestamp, 100_000);
+    assert_eq!(sink.packets[1].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(encoder.drain(), STATUS_OK);
+    assert!(encoder.padded_frames > 80);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(
+        sink.packets.last().unwrap().flags,
+        AUDIO_PACKET_END_OF_STREAM
+    );
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}
+
+#[test]
 fn queue_backpressure_and_invalid_input_accept_no_samples_or_continuity_changes() {
     let mut encoder = stream(1, 5);
     let bytes = vec![0u8; 240 * 2];
