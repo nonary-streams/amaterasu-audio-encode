@@ -348,14 +348,26 @@ fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
     );
     assert_eq!(
         controller
-            .handle("b", Operation::Recover { stream: id })
+            .handle(
+                "b",
+                Operation::Recover {
+                    stream: id,
+                    bitrate: None
+                }
+            )
             .err(),
         Some("stream_not_found")
     );
     controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
     assert_eq!(
         controller
-            .handle("b", Operation::Recover { stream: id })
+            .handle(
+                "b",
+                Operation::Recover {
+                    stream: id,
+                    bitrate: None
+                }
+            )
             .err(),
         Some("stream_not_found")
     );
@@ -366,16 +378,43 @@ fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
             .payload["streams"][0]["state"],
         "failed"
     );
+    assert_eq!(
+        controller
+            .handle(
+                "a",
+                Operation::Recover {
+                    stream: id,
+                    bitrate: Some(5_999)
+                }
+            )
+            .err(),
+        Some("unsupported_bitrate")
+    );
+    assert_eq!(controller.streams.get(&id).unwrap().state(), "failed");
     let reply = controller
-        .handle("a", Operation::Recover { stream: id })
+        .handle(
+            "a",
+            Operation::Recover {
+                stream: id,
+                bitrate: Some(64_000),
+            },
+        )
         .unwrap();
     assert_eq!(reply.payload["stream"], id);
+    assert_eq!(reply.payload["bitrate"], 64_000);
     assert_eq!(
         controller
             .handle("a", Operation::Status { stream: Some(id) })
             .unwrap()
             .payload["streams"][0]["state"],
         "encoding"
+    );
+    assert_eq!(
+        controller
+            .handle("a", Operation::Status { stream: Some(id) })
+            .unwrap()
+            .payload["streams"][0]["bitrate"],
+        64_000
     );
     assert_eq!(
         controller
@@ -438,7 +477,13 @@ fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
     controller.streams.get_mut(&id).unwrap().failure = Some("codec_encode_failed");
     assert_eq!(controller.drain("owner", id), MEDIA_BACKEND_ERROR);
     controller
-        .handle("owner", Operation::Recover { stream: id })
+        .handle(
+            "owner",
+            Operation::Recover {
+                stream: id,
+                bitrate: None,
+            },
+        )
         .unwrap();
     assert_eq!(
         controller

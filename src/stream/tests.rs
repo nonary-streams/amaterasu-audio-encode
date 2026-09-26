@@ -297,6 +297,55 @@ fn failed_stream_recovery_discards_uncertain_output_and_resumes_on_a_new_epoch()
 }
 
 #[test]
+fn failed_encoder_can_reopen_at_a_new_bitrate_after_preserving_prior_packets() {
+    let mut encoder = stream(1, 10);
+    let original_size = encoder.packet_bytes();
+    let bytes = vec![0u8; 480 * 2];
+    let first = input(&bytes, 1, PCM_I16, 1_000, 0);
+    // SAFETY: local PCM and sink allocations live through synchronous calls.
+    assert_eq!(unsafe { encoder.submit(&first) }, STATUS_OK);
+    encoder.failure = Some("codec_encode_failed");
+    assert_eq!(
+        encoder.recover_with_bitrate(Some(64_000)),
+        Err("stream_busy")
+    );
+    assert_eq!(encoder.configuration.bitrate, 128_000);
+    assert_eq!(
+        encoder.recover_with_bitrate(Some(5_999)),
+        Err("unsupported_bitrate")
+    );
+    assert_eq!(encoder.state(), "failed");
+    let mut sink = Sink::new();
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[0].bytes.len(), original_size);
+    assert_eq!(
+        unsafe { encoder.receive(sink.native()) },
+        MEDIA_BACKEND_ERROR
+    );
+    assert_eq!(
+        encoder.recover_with_configuration(Some(64_000), |_| Err("codec_initialization_failed")),
+        Err("codec_initialization_failed")
+    );
+    assert_eq!(encoder.configuration.bitrate, 128_000);
+    assert_eq!(encoder.state(), "failed");
+
+    encoder.recover_with_bitrate(Some(64_000)).unwrap();
+    assert_eq!(encoder.state(), "encoding");
+    assert_eq!(encoder.configuration.bitrate, 64_000);
+    assert_ne!(encoder.packet_bytes(), original_size);
+    let next = input(&bytes, 1, PCM_I16, 100_000, 50);
+    assert_eq!(unsafe { encoder.submit(&next) }, STATUS_OK);
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, STATUS_OK);
+    assert_eq!(sink.packets[1].flags, AUDIO_PACKET_DISCONTINUITY);
+    assert_eq!(sink.packets[1].sequence, 1);
+    assert_eq!(sink.packets[1].bytes.len(), encoder.packet_bytes());
+    assert_eq!(encoder.update_bitrate(96_000), Ok(()));
+    assert_eq!(encoder.drain(), STATUS_OK);
+    while unsafe { encoder.receive(sink.native()) } == STATUS_OK {}
+    assert_eq!(unsafe { encoder.receive(sink.native()) }, MEDIA_CLOSED);
+}
+
+#[test]
 fn failure_delivers_prior_packets_with_retry_before_reporting_error_and_recovery_resumes() {
     let mut encoder = stream(1, 10);
     let full = vec![0u8; 480 * 2];

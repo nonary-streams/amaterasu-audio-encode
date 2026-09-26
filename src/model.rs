@@ -122,6 +122,8 @@ pub enum Operation {
     },
     Recover {
         stream: u64,
+        #[serde(default)]
+        bitrate: Option<u32>,
     },
     Close {
         stream: u64,

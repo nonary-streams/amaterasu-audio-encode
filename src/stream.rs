@@ -111,20 +111,42 @@ impl Stream {
     }
 
     pub fn recover(&mut self) -> EncodeResult<()> {
-        self.recover_with(Encoder::new)
+        self.recover_with_bitrate(None)
     }
 
+    pub fn recover_with_bitrate(&mut self, bitrate: Option<u32>) -> EncodeResult<()> {
+        self.recover_with_configuration(bitrate, Encoder::new)
+    }
+
+    #[cfg(test)]
     fn recover_with(
         &mut self,
+        build_encoder: impl FnOnce(Configuration) -> EncodeResult<Encoder>,
+    ) -> EncodeResult<()> {
+        self.recover_with_configuration(None, build_encoder)
+    }
+
+    fn recover_with_configuration(
+        &mut self,
+        bitrate: Option<u32>,
         build_encoder: impl FnOnce(Configuration) -> EncodeResult<Encoder>,
     ) -> EncodeResult<()> {
         if self.failure.is_none() {
             return Err("stream_not_failed");
         }
+        let configuration = Configuration {
+            bitrate: bitrate.unwrap_or(self.configuration.bitrate),
+            ..self.configuration
+        }
+        .validate()?;
+        if configuration != self.configuration && !self.packets.is_empty() {
+            return Err("stream_busy");
+        }
         // Construct a complete replacement before discarding any state. If
         // codec initialization fails, the failed stream stays inspectable.
-        let encoder = build_encoder(self.configuration)?;
+        let encoder = build_encoder(configuration)?;
         self.encoder = encoder;
+        self.configuration = configuration;
         self.discarded_frames += self.buffered_frames() as u64;
         self.samples.clear();
         // Packets already produced by the old encoder are valid even if the
