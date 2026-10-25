@@ -1,8 +1,8 @@
-# Standalone Amaterasu audio encoder source (publication candidate)
+# Standalone Amaterasu audio encoder source
 
 This crate builds the `amaterasu-audio-encode` native module. See `README.md`
 for its PCM/Opus contract and bundled codec dependencies. `Cargo.toml` pins the
-proposed `nonary-streams/amaterasu-sdk` Git identity and exact SDK commit;
+public `nonary-streams/amaterasu-sdk` Git identity and exact SDK commit;
 `Cargo.lock` records the locally validated resolution. After dependencies and
 CMake are available, run `cargo test --locked --offline`. The source began at
 Amaterasu `a6b0db9e36a1a59328ab4b4785b27b210f8182b7` and was checked
