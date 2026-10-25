@@ -16,19 +16,19 @@ contains build-runtime configuration changes and an OSCE definition change
 (the latter is inactive here). libopus remains subject to its upstream license.
 
 The added build dependency is `cmake` (using the existing `cc` dependency).
-Builds need a C compiler and CMake. The verified macOS tool installation was:
+Builds need a C compiler and CMake. An example disposable tool environment is:
 
 ```sh
-python3 -m venv /private/tmp/amaterasu-cross/build-tools
-/private/tmp/amaterasu-cross/build-tools/bin/python -m pip install \
+python3 -m venv .venv-build-tools
+.venv-build-tools/bin/python -m pip install \
   'cmake==3.31.10' 'ninja==1.13.0'
-export PATH=/private/tmp/amaterasu-cross/build-tools/bin:$PATH
+export PATH="$(pwd)/.venv-build-tools/bin:$PATH"
 ```
 
 The normal Cargo lockfile fixes crate checksums. These build tools were fetched
 as official PyPI distributions in a temporary environment, outside the repository.
-See [cross-compilation instructions](../../docs/cross-compilation.md) for genuine
-Linux GNU and Microsoft SDK/MSVC cross tools. Cross-compilation checks do not
+Cross-compilation needs genuine Linux GNU or Microsoft SDK/MSVC cross tools.
+Cross-compilation checks do not
 qualify target execution, final linkage, device capture, or network streaming.
 
 Primary references: [opusic-sys](https://github.com/DoumanAsh/opusic-sys),
