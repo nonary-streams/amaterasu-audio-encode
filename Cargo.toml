@@ -8,8 +8,8 @@ rust-version = "1.89"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-amaterasu-module-sdk = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "51ef23b1923335e0bb0c6af9eef685c6f4807520" }
-amaterasu-media = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "51ef23b1923335e0bb0c6af9eef685c6f4807520" }
+amaterasu-module-sdk = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "fe3004d5889df3eb0ce6f68c74fbef0f33c76e94" }
+amaterasu-media = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "fe3004d5889df3eb0ce6f68c74fbef0f33c76e94" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.3"
