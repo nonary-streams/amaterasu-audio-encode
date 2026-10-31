@@ -42,7 +42,7 @@ impl ManagedModule for AudioEncodeModule {
         // Signed dependency ordering requires consumers to release all native
         // bindings before provider unload; grants are not a native-code sandbox.
         unsafe {
-            runtime.register_native(SERVICE, &factory.api)?;
+            amaterasu_module_sdk::audio::register_encoder(&runtime, SERVICE, &factory.api)?;
         }
         Ok(Self {
             runtime,

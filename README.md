@@ -5,6 +5,16 @@ native audio interface. Startup settings default to `{"enabled":false}`.
 Disabled startup creates no codec sessions and touches no audio devices. The
 provider is independent of WASAPI: a trusted native consumer supplies PCM.
 
+The native service registers `amaterasu.audio-encoder.native/1` through
+`amaterasu_module_sdk::audio::register_encoder`. Replacement providers use the
+same SDK adapter and Opus packet contract; consumers use `bind_encoder` to
+require the interface family before calling its table. Existing providers that
+register only an untyped table must adopt the typed contract to serve the
+updated stream consumer. Startup composition and signed grants still select and
+authorize the provider. C providers use `AMATERASU_AUDIO_ENCODER_CONTRACT`
+from `amaterasu_media.h` with the runtime's `native_register_typed` operation;
+C consumers use the same identity with `native_bind_typed`.
+
 ## Codec and build dependency
 
 The module pins `opusic-sys =0.7.5` with only its `bundled` feature, which builds
