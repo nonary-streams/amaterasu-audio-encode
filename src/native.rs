@@ -163,6 +163,9 @@ unsafe fn with_controller(
 }
 
 fn guarded(operation: impl FnOnce() -> Status) -> Status {
+    let _priority = amaterasu_module_sdk::threading::ScopedThreadPriority::best_effort(
+        amaterasu_module_sdk::threading::ThreadPriority::High,
+    );
     catch_unwind(AssertUnwindSafe(operation)).unwrap_or(STATUS_INTERNAL_ERROR)
 }
 

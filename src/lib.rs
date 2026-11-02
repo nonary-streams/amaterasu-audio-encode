@@ -52,6 +52,9 @@ impl ManagedModule for AudioEncodeModule {
     }
 
     fn tick(&mut self) -> ModuleResult<()> {
+        let _priority = amaterasu_module_sdk::threading::ScopedThreadPriority::best_effort(
+            amaterasu_module_sdk::threading::ThreadPriority::High,
+        );
         match self.runtime.send(Command::Poll {})? {
             Response::Pending => Ok(()),
             Response::Request {
