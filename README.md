@@ -208,6 +208,23 @@ closes every codec. Consumers must release bindings before provider unload via
 signed dependency ordering. Native modules are trusted code; grants do not
 sandbox arbitrary native code.
 
+Shutdown announcement rejects new opens, bitrate updates and codec recovery
+without taking the controller lock or interrupting existing native streams.
+Owner close, lookup and status remain available while consumers drain. A
+control request that encounters a busy native callback is retained for a later
+tick; its broker cancellation is checked again before execution. Failed open
+publication retains its rollback until the controller can release the codec.
+Quiescence reports ready only after taken requests settle and codec state is
+actually closed. A live packet callback keeps quiescence pending, with its
+borrowed packet unchanged until it returns.
+
+Native consumers must end calls and release their bindings before provider
+destruction. Neither a controller `Arc` nor a borrowed native table pins the
+provider's library code. Destruction therefore retains the native-call join
+barrier; this provider cannot safely interrupt a callback that never returns.
+Nonblocking tick and quiescence do not establish safe library unload for a
+consumer violating that ABI lifetime requirement.
+
 ## Verification and remaining scope
 
 Tests decode real encoder output with independently allocated reference
