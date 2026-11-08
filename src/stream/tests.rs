@@ -23,24 +23,21 @@ impl Sink {
             reject: false,
         }
     }
-    fn native(&mut self) -> AudioPacketSink {
-        unsafe extern "C" fn write(
-            context: *mut c_void,
-            packet: *const EncodedAudioPacket,
-        ) -> Status {
+    fn native(&mut self) -> AudioUnitSink {
+        unsafe extern "C" fn write(context: *mut c_void, packet: *const AudioUnit) -> Status {
             // SAFETY: tests keep the sink and packet alive throughout delivery.
             let sink = unsafe { &mut *context.cast::<Sink>() };
             let packet = unsafe { &*packet };
             sink.packets.push(Delivered {
-                bytes: unsafe { packet.bytes().unwrap() }.to_vec(),
+                bytes: unsafe { packet.payload.read().unwrap() }.to_vec(),
                 flags: packet.flags,
-                frames: packet.frames,
+                frames: (packet.duration_us * u64::from(SAMPLE_RATE) / 1_000_000) as u32,
                 timestamp: packet.timestamp_us,
                 sequence: packet.sequence,
             });
             if sink.reject { MEDIA_BUSY } else { STATUS_OK }
         }
-        AudioPacketSink {
+        AudioUnitSink {
             context: (self as *mut Self).cast(),
             write,
         }
@@ -51,7 +48,9 @@ fn input(bytes: &[u8], channels: u32, format: u32, timestamp_us: u64, sequence: 
     AudioFrame {
         sample_rate: SAMPLE_RATE,
         channels,
-        format,
+        format: AudioFormatId::standard(u64::from(format)),
+        sample_bytes: if format == PCM_F32 { 4 } else { 2 },
+        packing: AUDIO_PACKING_INTERLEAVED,
         frames: (bytes.len() / channels as usize / if format == PCM_F32 { 4 } else { 2 }) as u32,
         flags: 0,
         data: bytes.as_ptr(),

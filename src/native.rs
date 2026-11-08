@@ -1,6 +1,6 @@
 use crate::controller::Controller;
 use amaterasu_media::{
-    AudioEncoderApi, AudioFrame, AudioPacketSink, INTERFACE_MAJOR, INTERFACE_MINOR,
+    AudioEncoderApi, AudioFrame, AudioUnitSink, INTERFACE_MAJOR, INTERFACE_MINOR,
     MEDIA_BACKEND_ERROR, MEDIA_BUSY, MEDIA_CLOSED, MEDIA_UNSUPPORTED,
 };
 use amaterasu_module_sdk::abi::*;
@@ -119,7 +119,7 @@ unsafe extern "C" fn submit(context: *mut c_void, id: u64, frame: *const AudioFr
     })
 }
 
-unsafe extern "C" fn receive(context: *mut c_void, id: u64, sink: AudioPacketSink) -> Status {
+unsafe extern "C" fn receive(context: *mut c_void, id: u64, sink: AudioUnitSink) -> Status {
     guarded(|| {
         // SAFETY: caller keeps binding and sink alive for synchronous delivery.
         unsafe {

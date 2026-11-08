@@ -103,6 +103,17 @@ impl Configuration {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
     Enumerate,
+    Capabilities,
+    Probe {
+        audio_profile: Box<amaterasu_module_sdk::audio::AudioSessionProfile>,
+    },
+    Effective {
+        stream: u64,
+    },
+    Reconfigure {
+        stream: u64,
+        audio_profile: Box<amaterasu_module_sdk::audio::AudioSessionProfile>,
+    },
     Open {
         #[serde(default = "default_channels")]
         channels: u32,

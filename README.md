@@ -7,7 +7,7 @@ provider is independent of WASAPI: a trusted native consumer supplies PCM.
 
 The native service registers `amaterasu.audio-encoder.native/1` through
 `amaterasu_module_sdk::audio::register_encoder`. Replacement providers use the
-same SDK adapter and Opus packet contract; consumers use `bind_encoder` to
+same SDK adapter and format-neutral audio-unit contract; consumers use `bind_encoder` to
 require the interface family before calling its table. Existing providers that
 register only an untyped table must adopt the typed contract to serve the
 updated stream consumer. Startup composition and signed grants still select and
@@ -56,12 +56,16 @@ provided by the runtime, not a caller-supplied payload identity.
 | Action | Fields | Result |
 | --- | --- | --- |
 | `enumerate` | none | `ok`, `enabled`, `encoders`; empty when disabled |
+| `capabilities` | none | Typed PCM input and Opus output offers and provider limits |
+| `probe` | `audio_profile` | Reports that custom profiles are unsupported by this built-in provider |
 | `open` | `channels` (1, 2, 6, or 8; default 2), `packet_ms` (5, 10, 20; default 10), `bitrate` within the channel range below (default 128000), optional `operation_id` | `ok`, `stream`, `codec:"opus"`, `sample_rate:48000`, `channels`, `streams`, `coupled_streams`, `mapping_family`, `channel_mapping`, `wave_channel_mapping`, `packet_ms`, `bitrate`, `lookahead_frames`, `constant_bitrate:true`, `packet_bytes` |
 | `lookup` | `operation_id` | Same metadata as open, or `stream_not_found` |
 | `update` | `stream`, `bitrate` within the channel range below | `ok`, `stream`, current `bitrate` and `packet_bytes` |
 | `recover` | `stream` | Rebuild a failed stream's codec; `ok`, unchanged `stream`, and `packet_bytes` |
 | `close` | `stream` | `{"ok":true}` for the owner, including a retry after release; `stream_not_found` for unknown or foreign IDs |
 | `status` | optional `stream` | `ok`, `enabled`, caller-owned `streams` metadata and health |
+| `effective` | `stream` | Caller-owned stream status and effective settings |
+| `reconfigure` | `stream`, custom `audio_profile` | Reports unsupported; use `update` for built-in Opus bitrate changes |
 
 Errors are `{"ok":false,"code":"..."}` without PCM or backend diagnostics.
 
@@ -84,8 +88,8 @@ is 1 for surround and 0 for mono/stereo. `channel_mapping` is the canonical
 Vorbis-order decoder mapping (`[0,4,1,2,3,5]` for 5.1 and
 `[0,6,1,2,3,4,5,7]` for 7.1). `wave_channel_mapping` is a decoder mapping
 that instead produces the WAVE order above (`[0,1,4,5,2,3]` and
-`[0,1,6,7,4,5,2,3]`). The native packet ABI carries the channel count but
-not these mappings; a decoder must retain the open/status metadata. `enumerate`
+`[0,1,6,7,4,5,2,3]`). Audio units carry the negotiated codec identity and
+timing; a decoder must retain the channel count and mappings from open/status metadata. `enumerate`
 lists each channel layout and bitrate range, including `bitrate_min_5ms`.
 
 Disabled open returns `disabled`. Unsupported settings report specific format
@@ -139,8 +143,8 @@ released stream without recreating it. Other callers still receive
 
 `AudioEncoderApi` has `submit`, `receive`, and `drain`. It accepts 48 kHz mono,
 stereo, 5.1, or 7.1 PCM in the channel order above. Input may switch
-between interleaved little-endian F32 and I16 chunks, each bounded to 100 ms by
-`AudioFrame`. It performs no resampling or channel remapping.
+between interleaved little-endian F32 and I16 chunks bounded by the shared PCM
+byte limit. It performs no resampling or channel remapping.
 I16 maps by division by 32768. Finite F32 values are clipped to [-1, 1]; NaN and
 infinity are rejected before acceptance. `AUDIO_SILENT` supplies zeros regardless
 of sample bytes. Bytewise conversion supports unaligned input allocations.
@@ -153,7 +157,7 @@ generates valid Opus padding; the transport must never append arbitrary bytes to
 equalize packet sizes. Variable-bitrate output is not exposed in this profile.
 Mono/stereo use a single Opus encoder; 5.1/7.1 use the native Opus family-1
 surround encoder. The largest supported 7.1 profile produces 5120-byte 20 ms packets,
-within the encoded-audio ABI's 64 KiB limit. Transport consumers must support
+within the audio-unit ABI's 1 MiB payload limit. Transport consumers must support
 that size before enabling surround streaming.
 A stream retains fewer than one packet of partial
 PCM between submissions and at most 24 output packets, each capped at 16000

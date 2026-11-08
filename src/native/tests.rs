@@ -54,7 +54,9 @@ fn bound_tables_enforce_owner_reentrancy_close_and_shutdown_lifetimes() {
         let frame = AudioFrame {
             sample_rate: 48_000,
             channels: 1,
-            format: PCM_I16,
+            format: amaterasu_media::AudioFormatId::standard(u64::from(PCM_I16)),
+            sample_bytes: 2,
+            packing: amaterasu_media::AUDIO_PACKING_INTERLEAVED,
             frames: 480,
             flags: 0,
             data: bytes.as_ptr(),
@@ -69,7 +71,7 @@ fn bound_tables_enforce_owner_reentrancy_close_and_shutdown_lifetimes() {
         }
         unsafe extern "C" fn reject(
             context: *mut c_void,
-            _: *const amaterasu_media::EncodedAudioPacket,
+            _: *const amaterasu_media::AudioUnit,
         ) -> Status {
             // SAFETY: test keeps receiver and table alive; reentrant call must fail
             // fast rather than deadlock or mutate the currently delivered packet.
@@ -87,7 +89,7 @@ fn bound_tables_enforce_owner_reentrancy_close_and_shutdown_lifetimes() {
             table: owner,
             id,
         };
-        let sink = AudioPacketSink {
+        let sink = AudioUnitSink {
             context: (&mut receiver as *mut Receiver).cast(),
             write: reject,
         };
@@ -137,7 +139,9 @@ fn poisoned_provider_binding_closes_after_shutdown() {
         let frame = AudioFrame {
             sample_rate: 48_000,
             channels: 1,
-            format: PCM_I16,
+            format: amaterasu_media::AudioFormatId::standard(u64::from(PCM_I16)),
+            sample_bytes: 2,
+            packing: amaterasu_media::AUDIO_PACKING_INTERLEAVED,
             frames: 480,
             flags: 0,
             data: bytes.as_ptr(),
@@ -159,7 +163,7 @@ fn poisoned_provider_binding_closes_after_shutdown() {
         assert_eq!((api.submit)(api.base.context, id, &frame), STATUS_OK);
         unsafe extern "C" fn accept(
             context: *mut c_void,
-            packet: *const amaterasu_media::EncodedAudioPacket,
+            packet: *const amaterasu_media::AudioUnit,
         ) -> Status {
             // SAFETY: the counter and packet remain live for this callback.
             let delivered = unsafe { &mut *context.cast::<usize>() };
@@ -168,7 +172,7 @@ fn poisoned_provider_binding_closes_after_shutdown() {
             STATUS_OK
         }
         let mut delivered = 0usize;
-        let sink = AudioPacketSink {
+        let sink = AudioUnitSink {
             context: (&mut delivered as *mut usize).cast(),
             write: accept,
         };

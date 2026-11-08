@@ -382,7 +382,7 @@ impl Stream {
     /// # Safety
     /// The sink callback/context remain live through synchronous delivery and
     /// cannot retain the borrowed packet allocation or unwind across the ABI.
-    pub unsafe fn receive(&mut self, sink: AudioPacketSink) -> Status {
+    pub unsafe fn receive(&mut self, sink: AudioUnitSink) -> Status {
         // A codec failure cannot invalidate packets already encoded. Deliver
         // them in order before reporting the failure once the queue is empty.
         // A failed drain must never turn an already queued EOS into success.
@@ -401,14 +401,18 @@ impl Stream {
                 MEDIA_PENDING
             };
         };
-        let view = EncodedAudioPacket {
-            codec: CODEC_OPUS,
+        let view = AudioUnit {
+            generation: 1,
+            format: AUDIO_FORMAT_OPUS,
+            metadata_schema: AudioFormatId {
+                namespace: 0,
+                value: 0,
+                version: 0,
+            },
             flags: packet.flags,
-            sample_rate: SAMPLE_RATE,
-            channels: self.configuration.channels,
-            frames: packet.frames,
-            data: packet.bytes.as_ptr(),
-            len: packet.bytes.len(),
+            duration_us: u64::from(packet.frames) * 1_000_000 / u64::from(SAMPLE_RATE),
+            payload: amaterasu_module_sdk::abi::BorrowedBytes::new(&packet.bytes),
+            metadata: amaterasu_module_sdk::abi::BorrowedBytes::new(&[]),
             timestamp_us: packet.timestamp,
             sequence: packet.sequence,
         };
@@ -435,17 +439,22 @@ fn timestamp(origin: u64, frames: u64) -> Option<u64> {
 
 fn decode_pcm(bytes: &[u8], frame: &AudioFrame) -> Result<Vec<f32>, Status> {
     let count = frame.frames as usize * frame.channels as usize;
+    if frame.packing != AUDIO_PACKING_INTERLEAVED
+        || !matches!(frame.format, AUDIO_PCM_F32 | AUDIO_PCM_I16)
+    {
+        return Err(MEDIA_UNSUPPORTED);
+    }
     if frame.flags & AUDIO_SILENT != 0 {
         return Ok(vec![0.0; count]);
     }
     let mut samples = match frame.format {
-        PCM_F32 => bytes
+        AUDIO_PCM_F32 => bytes
             .as_chunks::<4>()
             .0
             .iter()
             .map(|sample| f32::from_le_bytes(*sample))
             .collect::<Vec<_>>(),
-        PCM_I16 => bytes
+        AUDIO_PCM_I16 => bytes
             .as_chunks::<2>()
             .0
             .iter()

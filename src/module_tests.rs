@@ -361,10 +361,7 @@ fn shutdown_announcement_closes_admission_without_retiring_consumer_codec() {
 
 #[test]
 fn native_packet_borrow_remains_live_until_callback_returns_before_quiescence() {
-    use amaterasu_media::{
-        AudioEncoderApi, AudioFrame, AudioPacketSink, EncodedAudioPacket, INTERFACE_MAJOR,
-        INTERFACE_MINOR, PCM_I16,
-    };
+    use amaterasu_media::{AudioEncoderApi, AudioFrame, INTERFACE_MAJOR, INTERFACE_MINOR, PCM_I16};
     let mut host = Host {
         replies: VecDeque::from([
             Response::Result {
@@ -430,13 +427,13 @@ fn native_packet_borrow_remains_live_until_callback_returns_before_quiescence() 
     }
     unsafe extern "C" fn receive_packet(
         context: *mut c_void,
-        packet: *const EncodedAudioPacket,
+        packet: *const amaterasu_media::AudioUnit,
     ) -> Status {
         // SAFETY: the worker owns the receiver for this entire callback; packet
         // bytes are borrowed only before the callback returns.
         let receiver = unsafe { &mut *context.cast::<Receiver>() };
         let packet = unsafe { &*packet };
-        let bytes = unsafe { std::slice::from_raw_parts(packet.data, packet.len) };
+        let bytes = unsafe { packet.payload.read().unwrap() };
         let original = bytes.to_vec();
         if receiver.ready.send(()).is_err() {
             return STATUS_INTERNAL_ERROR;
@@ -457,7 +454,9 @@ fn native_packet_borrow_remains_live_until_callback_returns_before_quiescence() 
             let frame = AudioFrame {
                 sample_rate: 48_000,
                 channels: 1,
-                format: PCM_I16,
+                format: amaterasu_media::AudioFormatId::standard(u64::from(PCM_I16)),
+                sample_bytes: 2,
+                packing: amaterasu_media::AUDIO_PACKING_INTERLEAVED,
                 frames: 480,
                 flags: 0,
                 data: pcm.as_ptr(),
@@ -475,7 +474,7 @@ fn native_packet_borrow_remains_live_until_callback_returns_before_quiescence() 
             let received = (api.receive)(
                 api.base.context,
                 stream,
-                AudioPacketSink {
+                amaterasu_media::AudioUnitSink {
                     context: (&mut receiver as *mut Receiver).cast(),
                     write: receive_packet,
                 },

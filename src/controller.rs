@@ -1,5 +1,5 @@
 use crate::{model::*, stream::Stream};
-use amaterasu_media::{AudioFrame, AudioPacketSink, MEDIA_CLOSED};
+use amaterasu_media::{AudioFrame, AudioUnitSink, MEDIA_CLOSED};
 use amaterasu_module_sdk::abi::Status;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,7 +35,66 @@ impl Controller {
 
     pub fn handle(&mut self, owner: &str, operation: Operation) -> EncodeResult<ControlReply> {
         let (payload, created) = match operation {
+            Operation::Effective { stream } => {
+                self.owned(owner, stream)?;
+                (self.status(owner, Some(stream)), None)
+            }
+            Operation::Reconfigure {
+                stream,
+                audio_profile,
+            } => {
+                let _ = audio_profile;
+                self.owned(owner, stream)?;
+                return Err("unsupported_audio_reconfiguration");
+            }
             Operation::Enumerate => (self.enumerate(), None),
+            Operation::Capabilities => {
+                use amaterasu_module_sdk::audio::{
+                    AudioProviderCapabilities, standard_encoded_offer, standard_pcm_format,
+                };
+                let pcm_inputs = if self.enabled {
+                    [1, 2, 6, 8]
+                        .into_iter()
+                        .flat_map(|channels| {
+                            [
+                                amaterasu_media::AUDIO_PCM_F32,
+                                amaterasu_media::AUDIO_PCM_I16,
+                            ]
+                            .into_iter()
+                            .filter_map(move |format| standard_pcm_format(channels, format))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let encoded_formats = if self.enabled {
+                    [1, 2, 6, 8]
+                        .into_iter()
+                        .filter_map(|channels| {
+                            standard_encoded_offer(
+                                amaterasu_media::AUDIO_FORMAT_OPUS,
+                                channels,
+                                crate::codec::MAX_OPUS_PACKET as u32,
+                            )
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (
+                    json!({"ok":true,"capabilities":AudioProviderCapabilities { pcm_inputs, pcm_outputs: vec![],
+                    encoded_formats, encoded_source: false, max_buffered_bytes: None,
+                    min_latency_us: None, max_latency_us: None,
+                    properties: json!({"codec":"opus","sample_rate":48000,"packet_ms":[5,10,20],"custom_profiles":false}) }}),
+                    None,
+                )
+            }
+            // This provider's GameStream Opus configuration is selected through
+            // its ordinary open contract; it does not claim custom profiles.
+            Operation::Probe { audio_profile } => (
+                json!({"ok":true,"supported":false,"audio_profile":audio_profile}),
+                None,
+            ),
             Operation::Open {
                 channels,
                 packet_ms,
@@ -320,7 +379,7 @@ impl Controller {
 
     /// # Safety
     /// Sink callback/context are live; borrowed bytes cannot escape its callback.
-    pub unsafe fn receive(&mut self, owner: &str, id: u64, sink: AudioPacketSink) -> Status {
+    pub unsafe fn receive(&mut self, owner: &str, id: u64, sink: AudioUnitSink) -> Status {
         match self.owned_mut(owner, id) {
             Some(stream) => unsafe { stream.receive(sink) },
             None => MEDIA_CLOSED,

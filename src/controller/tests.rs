@@ -1,7 +1,7 @@
 use super::*;
 use amaterasu_media::{
-    AUDIO_PACKET_DISCONTINUITY, AUDIO_PACKET_END_OF_STREAM, EncodedAudioPacket,
-    MEDIA_BACKEND_ERROR, MEDIA_BUSY, MEDIA_CLOSED, MEDIA_PENDING, PCM_I16,
+    AUDIO_PACKET_DISCONTINUITY, AUDIO_PACKET_END_OF_STREAM, AudioUnit, MEDIA_BACKEND_ERROR,
+    MEDIA_BUSY, MEDIA_CLOSED, MEDIA_PENDING, PCM_I16,
 };
 use amaterasu_module_sdk::abi::STATUS_OK;
 use std::ffi::c_void;
@@ -13,6 +13,25 @@ fn open(id: Option<&str>) -> Operation {
         bitrate: 128_000,
         operation_id: id.map(str::to_owned),
     }
+}
+
+#[test]
+fn capabilities_report_the_builtin_opus_formats_and_pcm_inputs() {
+    let mut controller = Controller::new(true);
+    let reply = controller
+        .handle("owner", Operation::Capabilities)
+        .unwrap()
+        .payload;
+    let caps: amaterasu_module_sdk::audio::AudioCapabilitiesResult =
+        serde_json::from_value(reply).unwrap();
+    assert_eq!(caps.capabilities.pcm_inputs.len(), 8);
+    assert_eq!(caps.capabilities.encoded_formats.len(), 4);
+    assert!(
+        caps.capabilities
+            .encoded_formats
+            .iter()
+            .all(|offer| offer.codec == amaterasu_media::AUDIO_FORMAT_OPUS)
+    );
 }
 
 #[test]
@@ -434,14 +453,11 @@ fn only_the_owner_can_recover_a_failed_stream_without_changing_its_identity() {
 
 #[test]
 fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
-    unsafe extern "C" fn collect(
-        context: *mut c_void,
-        packet: *const EncodedAudioPacket,
-    ) -> Status {
+    unsafe extern "C" fn collect(context: *mut c_void, packet: *const AudioUnit) -> Status {
         // SAFETY: this test keeps both the vector and packet live through the callback.
         let delivered = unsafe { &mut *context.cast::<Vec<(u64, u32, usize)>>() };
         let packet = unsafe { &*packet };
-        delivered.push((packet.sequence, packet.flags, packet.len));
+        delivered.push((packet.sequence, packet.flags, packet.payload.len));
         STATUS_OK
     }
 
@@ -464,7 +480,9 @@ fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
     let frame = AudioFrame {
         sample_rate: SAMPLE_RATE,
         channels: 2,
-        format: PCM_I16,
+        format: amaterasu_media::AudioFormatId::standard(u64::from(PCM_I16)),
+        sample_bytes: 2,
+        packing: amaterasu_media::AUDIO_PACKING_INTERLEAVED,
         frames: 480,
         flags: 0,
         data: samples.as_ptr(),
@@ -498,7 +516,7 @@ fn recovery_preserves_accepted_packets_then_drains_new_epoch_before_release() {
         id
     );
     let mut delivered: Vec<(u64, u32, usize)> = Vec::new();
-    let sink = AudioPacketSink {
+    let sink = AudioUnitSink {
         context: (&mut delivered as *mut Vec<(u64, u32, usize)>).cast(),
         write: collect,
     };
@@ -547,16 +565,13 @@ fn abandoned_eos_allows_bitrate_recovery_and_retried_delivery_before_release() {
         packets: Vec<(u64, u32, usize)>,
         reject_next: bool,
     }
-    unsafe extern "C" fn receive_packet(
-        context: *mut c_void,
-        packet: *const EncodedAudioPacket,
-    ) -> Status {
+    unsafe extern "C" fn receive_packet(context: *mut c_void, packet: *const AudioUnit) -> Status {
         // SAFETY: the receiver and borrowed packet live through this call.
         let receiver = unsafe { &mut *context.cast::<Receiver>() };
         let packet = unsafe { &*packet };
         receiver
             .packets
-            .push((packet.sequence, packet.flags, packet.len));
+            .push((packet.sequence, packet.flags, packet.payload.len));
         if std::mem::take(&mut receiver.reject_next) {
             MEDIA_BUSY
         } else {
@@ -578,7 +593,7 @@ fn abandoned_eos_allows_bitrate_recovery_and_retried_delivery_before_release() {
         packets: Vec::new(),
         reject_next: true,
     };
-    let sink = AudioPacketSink {
+    let sink = AudioUnitSink {
         context: (&mut receiver as *mut Receiver).cast(),
         write: receive_packet,
     };
@@ -610,7 +625,9 @@ fn abandoned_eos_allows_bitrate_recovery_and_retried_delivery_before_release() {
     let frame = AudioFrame {
         sample_rate: SAMPLE_RATE,
         channels: 2,
-        format: PCM_I16,
+        format: amaterasu_media::AudioFormatId::standard(u64::from(PCM_I16)),
+        sample_bytes: 2,
+        packing: amaterasu_media::AUDIO_PACKING_INTERLEAVED,
         frames: 480,
         flags: 0,
         data: samples.as_ptr(),
