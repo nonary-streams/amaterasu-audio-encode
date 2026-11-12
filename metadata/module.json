@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "family": "audio",
+  "repository": "https://github.com/nonary-streams/amaterasu-audio-encode",
+  "mount": "modules/audio-encode",
+  "components": [
+    {
+      "id": "amaterasu.audio-encode",
+      "package": "amaterasu-audio-encode",
+      "path": ".",
+      "name": "Audio encoder",
+      "summary": "Encodes captured audio as Opus."
+    }
+  ]
+}
